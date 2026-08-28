@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Writing Analyzer</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+  <!-- SIDEBAR OVERLAY (mobile) -->
+  <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-logo">
+        <span class="logo-icon">✦</span>
+        <span class="logo-text">AI Writing<br>Analyzer</span>
+      </div>
+      <button class="sidebar-close" id="sidebarClose" aria-label="Tutup sidebar">✕</button>
+    </div>
+    <nav class="sidebar-nav" aria-label="Navigasi utama">
+      <a href="#" class="nav-item active" data-page="dashboard">
+        <span class="nav-icon">◈</span><span class="nav-label">Dashboard</span>
+      </a>
+      <a href="#" class="nav-item" data-page="analyze">
+        <span class="nav-icon">◉</span><span class="nav-label">Analisis Teks</span>
+      </a>
+      <a href="#" class="nav-item" data-page="guide">
+        <span class="nav-icon">◎</span><span class="nav-label">Panduan Analisis</span>
+      </a>
+      <a href="#" class="nav-item" data-page="history">
+        <span class="nav-icon">◷</span><span class="nav-label">Riwayat Analisis</span>
+      </a>
+      <a href="#" class="nav-item" data-page="about">
+        <span class="nav-icon">◌</span><span class="nav-label">Tentang</span>
+      </a>
+    </nav>
+    <div class="sidebar-footer">
+      <p class="sidebar-note">Versi 1.0.0 · Heuristik berbasis teks</p>
+    </div>
+  </aside>
+
+  <!-- MAIN WRAPPER -->
+  <div class="main-wrapper" id="mainWrapper">
+
+    <!-- TOP NAVIGATION -->
+    <header class="topnav">
+      <div class="topnav-left">
+        <button class="hamburger" id="hamburger" aria-label="Buka sidebar">☰</button>
+        <div class="topnav-title">
+          <h1 id="pageTitle">Dashboard</h1>
+          <p id="pageDesc" class="topnav-desc">Selamat datang di AI Writing Analyzer</p>
+        </div>
+      </div>
+      <div class="topnav-right">
+        <div class="status-indicator" id="statusIndicator">
+          <span class="status-dot idle"></span>
+          <span class="status-label">Siap</span>
+        </div>
+        <div class="avatar" aria-label="Profil pengguna">U</div>
+      </div>
+    </header>
+
+    <!-- PAGE CONTENT -->
+    <main class="page-content">
+
+      <!-- ===== PAGE: DASHBOARD ===== -->
+      <section class="page" id="page-dashboard">
+        <div class="dashboard-welcome">
+          <div class="welcome-card">
+            <div class="welcome-text">
+              <h2>Selamat Datang di AI Writing Analyzer</h2>
+              <p class="welcome-author">Project dibuat oleh <strong>Bimo Cahyo Ramadhan</strong> — Mahasiswa Sosiologi, UIN Sunan Gunung Djati Bandung</p>
+
+              <p>Alat analisis pola tulisan akademik berbasis statistik teks. Sistem ini memperkirakan seberapa besar teks Anda menunjukkan karakteristik yang umum ditemukan pada tulisan yang dihasilkan AI — bukan membuktikan asal-usul tulisan.</p>
+              <button class="btn btn-primary" data-goto="analyze">Mulai Analisis →</button>
+            </div>
+            <div class="welcome-illustration" aria-hidden="true">✦</div>
+          </div>
+          <div class="info-banner">
+            <span class="info-icon">ℹ</span>
+            <p>Hasil analisis adalah <strong>estimasi berbasis pola bahasa dan statistik teks</strong>, bukan bukti pasti bahwa tulisan dibuat oleh AI.</p>
+          </div>
+        </div>
+
+        <div class="dashboard-kpi-empty" id="dashKpiArea">
+          <div class="empty-state">
+            <div class="empty-icon" aria-hidden="true">◎</div>
+            <h3>Belum ada analisis</h3>
+            <p>Belum ada teks yang dianalisis.<br>Masukkan tulisan Anda untuk melihat hasil analisis.</p>
+            <button class="btn btn-primary" data-goto="analyze">Analisis Teks Sekarang</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== PAGE: ANALYZE ===== -->
+      <section class="page hidden" id="page-analyze">
+
+        <!-- Input Area -->
+        <div class="card input-card">
+          <div class="card-header">
+            <h2 class="card-title">Masukkan Teks Akademik</h2>
+            <p class="card-subtitle">Tempel atau ketik teks Anda di bawah ini, atau unggah file <code>.txt</code></p>
+          </div>
+          <div class="textarea-wrapper">
+            <textarea id="inputText" placeholder="Tempelkan teks akademik Anda di sini..." aria-label="Area input teks akademik" spellcheck="false"></textarea>
+          </div>
+          <div class="input-meta">
+            <div class="counters">
+              <span class="counter-item"><strong id="wordCount">0</strong> kata</span>
+              <span class="counter-sep">·</span>
+              <span class="counter-item"><strong id="charCount">0</strong> karakter</span>
+              <span class="counter-sep">·</span>
+              <span class="counter-item"><strong id="sentCount">0</strong> kalimat</span>
+            </div>
+            <div class="input-actions">
+              <label class="btn btn-ghost" for="fileUpload" aria-label="Unggah file teks">↑ Unggah .txt</label>
+              <input type="file" id="fileUpload" accept=".txt" style="display:none;" aria-hidden="true" />
+              <button class="btn btn-ghost" id="clearBtn">Hapus</button>
+              <button class="btn btn-primary" id="analyzeBtn">Analisis Teks</button>
+            </div>
+          </div>
+          <div class="info-banner small">
+            <span class="info-icon">ℹ</span>
+            <p>Hasil analisis adalah estimasi berbasis pola bahasa dan statistik teks, bukan bukti pasti bahwa tulisan dibuat oleh AI.</p>
+          </div>
+          <div class="error-msg hidden" id="errorMsg" role="alert"></div>
+        </div>
+
+        <!-- Results Area (hidden until analysis) -->
+        <div id="resultsArea" class="hidden">
+
+          <!-- KPI Cards -->
+          <div class="kpi-grid">
+            <div class="kpi-card kpi-main">
+              <p class="kpi-label">AI Writing Risk Score</p>
+              <div class="kpi-score" id="kpiRiskScore">—</div>
+              <div class="kpi-badge" id="kpiRiskBadge">—</div>
+              <p class="kpi-note">Skor estimasi risiko pola tulisan AI</p>
+            </div>
+            <div class="kpi-card">
+              <p class="kpi-label">Human-like Score</p>
+              <div class="kpi-score kpi-human" id="kpiHumanScore">—</div>
+              <p class="kpi-note">Indikasi pola tulisan manusia</p>
+            </div>
+            <div class="kpi-card">
+              <p class="kpi-label">Jumlah Kata</p>
+              <div class="kpi-score kpi-neutral" id="kpiWords">—</div>
+              <p class="kpi-note">Total kata dalam teks</p>
+            </div>
+            <div class="kpi-card">
+              <p class="kpi-label">Jumlah Kalimat</p>
+              <div class="kpi-score kpi-neutral" id="kpiSentences">—</div>
+              <p class="kpi-note">Total kalimat dalam teks</p>
+            </div>
+          </div>
+
+          <!-- Charts Row -->
+          <div class="charts-grid">
+            <div class="card chart-card">
+              <h3 class="card-title">Skor Risiko Keseluruhan</h3>
+              <p class="card-subtitle">Visualisasi skor risiko estimasi</p>
+              <div class="chart-container chart-donut-container">
+                <canvas id="chartDonut" aria-label="Grafik skor risiko"></canvas>
+                <div class="donut-center" id="donutCenter">—</div>
+              </div>
+            </div>
+            <div class="card chart-card">
+              <h3 class="card-title">Profil Fitur Teks</h3>
+              <p class="card-subtitle">Radar karakteristik tulisan terukur</p>
+              <div class="chart-container">
+                <canvas id="chartRadar" aria-label="Grafik radar fitur teks"></canvas>
+              </div>
+            </div>
+          </div>
+
+          <!-- Sentence Length Chart -->
+          <div class="card chart-card-wide">
+            <h3 class="card-title">Distribusi Panjang Kalimat</h3>
+            <p class="card-subtitle">Variasi panjang kalimat menunjukkan tingkat keberagaman struktur tulisan</p>
+            <div class="chart-container chart-bar-container">
+              <canvas id="chartSentLen" aria-label="Grafik distribusi panjang kalimat"></canvas>
+            </div>
+          </div>
+
+          <!-- Risk Factor Bar -->
+          <div class="card chart-card-wide">
+            <h3 class="card-title">Kontribusi Faktor Risiko</h3>
+            <p class="card-subtitle">Seberapa besar setiap fitur memengaruhi skor risiko akhir</p>
+            <div class="chart-container chart-bar-container">
+              <canvas id="chartRiskFactors" aria-label="Grafik kontribusi faktor risiko"></canvas>
+            </div>
+          </div>
+
+          <!-- Detail Analysis Panel -->
+          <div class="card">
+            <h3 class="card-title">Panel Analisis Detail</h3>
+            <p class="card-subtitle">Setiap metrik diukur langsung dari teks yang Anda masukkan</p>
+            <div class="metrics-grid" id="metricsGrid"></div>
+          </div>
+
+          <!-- Why Score Section -->
+          <div class="card">
+            <h3 class="card-title">Mengapa Skor Ini Muncul?</h3>
+            <p class="card-subtitle">Penjelasan utama faktor-faktor yang memengaruhi skor estimasi</p>
+            <div id="whySection"></div>
+            <div class="disclaimer-box">
+              <span class="info-icon">⚠</span>
+              <p>Pola ini <strong>tidak membuktikan</strong> bahwa teks dibuat menggunakan AI. Skor ini adalah estimasi heuristik berbasis karakteristik statistik teks.</p>
+            </div>
+          </div>
+
+          <!-- Writing Quality Insight -->
+          <div class="card">
+            <h3 class="card-title">Insight Kualitas Tulisan</h3>
+            <p class="card-subtitle">Umpan balik netral untuk meningkatkan kualitas tulisan akademik Anda</p>
+            <div id="insightSection"></div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ===== PAGE: GUIDE ===== -->
+      <section class="page hidden" id="page-guide">
+        <div class="card">
+          <h2 class="card-title">Bagaimana Sistem Ini Bekerja?</h2>
+          <p class="card-subtitle">Panduan memahami proses analisis AI Writing Analyzer</p>
+          <div class="guide-steps">
+            <div class="guide-step"><div class="step-num">1</div><div class="step-body"><h4>Teks Dimasukkan</h4><p>Pengguna menempelkan atau mengunggah teks akademik ke dalam sistem.</p></div></div>
+            <div class="guide-step"><div class="step-num">2</div><div class="step-body"><h4>Sistem Membaca Karakteristik Tulisan</h4><p>Sistem mengekstrak fitur-fitur linguistik dan statistik dari teks: panjang kalimat, keragaman kosakata, frekuensi frasa, dan lainnya.</p></div></div>
+            <div class="guide-step"><div class="step-num">3</div><div class="step-body"><h4>Sistem Menghitung Fitur Statistik</h4><p>Setiap fitur diukur secara numerik menggunakan formula yang telah ditentukan, bukan tebakan atau angka acak.</p></div></div>
+            <div class="guide-step"><div class="step-num">4</div><div class="step-body"><h4>Setiap Fitur Diberi Bobot</h4><p>Fitur-fitur yang lebih berkorelasi dengan pola tulisan AI diberi bobot lebih tinggi dalam formula skor akhir.</p></div></div>
+            <div class="guide-step"><div class="step-num">5</div><div class="step-body"><h4>Sistem Menghasilkan Skor Risiko</h4><p>Skor risiko akhir dihitung dari gabungan berbobot seluruh fitur. Hasilnya bersifat deterministik: input yang sama selalu menghasilkan skor yang sama.</p></div></div>
+            <div class="guide-step"><div class="step-num">6</div><div class="step-body"><h4>Sistem Menjelaskan Faktor Penentu</h4><p>Aplikasi menampilkan faktor mana yang paling berkontribusi terhadap skor, sehingga pengguna memahami alasan di balik angka tersebut.</p></div></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 class="card-title">Fitur yang Dianalisis</h3>
+          <div class="feature-table-wrapper">
+            <table class="feature-table">
+              <thead><tr><th>Fitur</th><th>Deskripsi</th><th>Bobot</th></tr></thead>
+              <tbody>
+                <tr><td>Keseragaman Kalimat</td><td>Seberapa seragam panjang kalimat-kalimat dalam teks</td><td>18%</td></tr>
+                <tr><td>Repetisi Leksikal</td><td>Frekuensi pengulangan kata-kata signifikan</td><td>14%</td></tr>
+                <tr><td>Repetisi Frasa</td><td>Frekuensi pengulangan frasa (2–3 kata)</td><td>12%</td></tr>
+                <tr><td>Konsistensi Struktur</td><td>Keseragaman pola paragraf dan kalimat</td><td>10%</td></tr>
+                <tr><td>Keragaman Kosakata</td><td>Rasio kata unik terhadap total kata (TTR)</td><td>12%</td></tr>
+                <tr><td>Kompleksitas Kata</td><td>Proporsi kata panjang (&gt;7 karakter)</td><td>10%</td></tr>
+                <tr><td>Variasi Tanda Baca</td><td>Keberagaman penggunaan tanda baca</td><td>8%</td></tr>
+                <tr><td>Burstiness Kalimat</td><td>Variasi mendadak dalam panjang kalimat</td><td>16%</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card disclaimer-card">
+          <div class="disclaimer-icon" aria-hidden="true">⚠</div>
+          <h3>Keterbatasan Sistem</h3>
+          <p>AI detector <strong>tidak dapat menentukan asal tulisan secara sempurna</strong>. Tidak ada sistem yang dapat membuktikan secara absolut apakah sebuah teks ditulis oleh manusia atau AI.</p>
+          <p>Gunakan hasil ini sebagai <strong>alat bantu analisis</strong>, bukan sebagai bukti tunggal. Skor yang tinggi tidak berarti teks pasti ditulis oleh AI, dan skor yang rendah tidak berarti teks pasti ditulis oleh manusia.</p>
+          <div class="risk-levels">
+            <h4>Interpretasi Skor (Ambang Analitik Aplikasi Ini)</h4>
+            <div class="risk-level low"><span class="risk-range">0–29</span><span class="risk-name">Risiko Rendah</span></div>
+            <div class="risk-level moderate"><span class="risk-range">30–59</span><span class="risk-name">Risiko Sedang</span></div>
+            <div class="risk-level high"><span class="risk-range">60–79</span><span class="risk-name">Risiko Tinggi</span></div>
+            <div class="risk-level very-high"><span class="risk-range">80–100</span><span class="risk-name">Risiko Sangat Tinggi</span></div>
+          </div>
+          <p class="note-small">Ambang interpretasi ini bersifat heuristik dan tidak didasarkan pada standar ilmiah universal.</p>
+        </div>
+      </section>
+
+      <!-- ===== PAGE: HISTORY ===== -->
+      <section class="page hidden" id="page-history">
+        <div class="card">
+          <div class="card-header-row">
+            <div>
+              <h2 class="card-title">Riwayat Analisis</h2>
+              <p class="card-subtitle">Hasil analisis sebelumnya tersimpan di browser Anda (localStorage)</p>
+            </div>
+            <button class="btn btn-ghost btn-danger" id="clearHistoryBtn">Hapus Semua</button>
+          </div>
+          <div id="historyList"></div>
+        </div>
+      </section>
+
+      <!-- ===== PAGE: ABOUT ===== -->
+      <section class="page hidden" id="page-about">
+        <div class="card about-card">
+          <div class="about-logo" aria-hidden="true">✦</div>
+          <h2>AI Writing Analyzer</h2>
+          <p class="about-version">Versi 1.0.0</p>
+          <p>Alat analisis pola tulisan akademik berbasis statistik dan heuristik linguistik. Dibangun untuk membantu mahasiswa dan dosen memahami karakteristik teks secara lebih mendalam.</p>
+          <hr class="about-divider" />
+          <div class="about-grid">
+            <div class="about-item"><h4>Tujuan</h4><p>Memberikan estimasi berbasis data tentang sejauh mana sebuah teks menampilkan karakteristik pola tulisan yang umum ditemukan pada teks yang dihasilkan AI.</p></div>
+            <div class="about-item"><h4>Teknologi</h4><p>HTML5, CSS3, JavaScript Vanilla, Chart.js. Tidak memerlukan server, tidak menggunakan API eksternal, tidak menyimpan data ke cloud.</p></div>
+            <div class="about-item"><h4>Privasi</h4><p>Semua analisis dilakukan di browser Anda. Teks yang Anda masukkan tidak pernah dikirimkan ke server manapun.</p></div>
+            <div class="about-item"><h4>Keterbatasan</h4><p>Sistem ini adalah heuristik berbasis fitur teks — bukan model machine learning. Hasilnya adalah estimasi, bukan diagnosis akurat.</p></div>
+          </div>
+          <div class="disclaimer-box mt-1">
+            <span class="info-icon">⚠</span>
+            <p>Jangan gunakan hasil analisis ini sebagai satu-satunya dasar keputusan akademik. Selalu gunakan penilaian manusia yang komprehensif.</p>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
