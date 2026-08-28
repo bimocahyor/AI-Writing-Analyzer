@@ -37,4 +37,4 @@ proof of AI authorship.
 
 ## Live Demo
 
-https://namaakun.github.io/AI-Writing-Analyzer/
+https://bimocahyor.github.io/AI-Writing-Analyzer/
