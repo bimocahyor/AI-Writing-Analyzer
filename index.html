@@ -9,6 +9,9 @@
 </head>
 <body>
 
+  <!-- TOAST NOTIFICATIONS -->
+  <div class="toast-container" id="toastContainer" aria-live="polite" aria-atomic="true"></div>
+
   <!-- SIDEBAR OVERLAY (mobile) -->
   <div class="sidebar-overlay" id="sidebarOverlay"></div>
 
@@ -220,7 +223,158 @@
             <div id="insightSection"></div>
           </div>
 
-        </div>
+          <!-- ══════════════════════════════════════════════════════
+               REKOMENDASI PERBAIKAN
+               ══════════════════════════════════════════════════════ -->
+          <div class="card section-divider-card">
+            <div class="section-badge">Langkah 4</div>
+            <h3 class="card-title">Rekomendasi Perbaikan</h3>
+            <p class="card-subtitle">Masalah teridentifikasi dalam tulisan Anda beserta saran perbaikan konkret</p>
+            <div id="rekomendasiSection"></div>
+          </div>
+
+          <!-- ══════════════════════════════════════════════════════
+               WRITING IMPROVER
+               ══════════════════════════════════════════════════════ -->
+          <div class="card writing-improver-card" id="writingImproverCard">
+            <div class="section-badge gold">Langkah 5</div>
+            <div class="improver-header">
+              <div>
+                <h3 class="card-title">Writing Improver</h3>
+                <p class="card-subtitle">Perbaiki kejelasan, variasi, dan naturalness tulisan Anda.</p>
+              </div>
+            </div>
+
+            <!-- Controls -->
+            <div class="improver-controls">
+              <div class="control-group">
+                <label class="control-label">Tujuan Penulisan</label>
+                <div class="btn-group" id="writingGoalGroup" role="group" aria-label="Tujuan penulisan">
+                  <button class="btn-toggle active" data-value="academic">Akademik</button>
+                  <button class="btn-toggle" data-value="natural">Jelas & Natural</button>
+                  <button class="btn-toggle" data-value="concise">Ringkas</button>
+                  <button class="btn-toggle" data-value="formal">Formal</button>
+                  <button class="btn-toggle" data-value="readable">Mudah Dibaca</button>
+                </div>
+              </div>
+              <div class="control-group">
+                <label class="control-label">Intensitas Perbaikan</label>
+                <div class="btn-group" id="intensityGroup" role="group" aria-label="Intensitas perbaikan">
+                  <button class="btn-toggle" data-value="light">Ringan</button>
+                  <button class="btn-toggle active" data-value="moderate">Sedang</button>
+                  <button class="btn-toggle" data-value="extensive">Menyeluruh</button>
+                </div>
+              </div>
+              <div class="improver-actions">
+                <button class="btn btn-primary btn-improver" id="improveBtn">✦ Perbaiki Tulisan</button>
+                <button class="btn btn-ghost" id="improveResetBtn">Reset</button>
+              </div>
+            </div>
+
+            <!-- Loading state -->
+            <div class="improver-loading hidden" id="improverLoading" aria-live="polite">
+              <div class="loading-steps">
+                <div class="loading-step" id="lstep1">Menganalisis pola tulisan...</div>
+                <div class="loading-step" id="lstep2">Menyusun rekomendasi...</div>
+                <div class="loading-step" id="lstep3">Memperbaiki struktur tulisan...</div>
+              </div>
+            </div>
+
+            <!-- Text Comparison Panels -->
+            <div class="improver-panels hidden" id="improverPanels">
+
+              <!-- View Mode Tabs -->
+              <div class="view-tabs" role="tablist" aria-label="Mode tampilan">
+                <button class="view-tab active" data-view="original" role="tab" aria-selected="true">Asli</button>
+                <button class="view-tab" data-view="improved" role="tab" aria-selected="false">Hasil Perbaikan</button>
+                <button class="view-tab" data-view="compare" role="tab" aria-selected="false">Perbandingan</button>
+              </div>
+
+              <!-- Original -->
+              <div class="panel-view" id="view-original">
+                <div class="panel-label">Teks Asli</div>
+                <div class="text-panel original-panel" id="originalTextPanel"></div>
+              </div>
+
+              <!-- Improved -->
+              <div class="panel-view hidden" id="view-improved">
+                <div class="panel-header-row">
+                  <div class="panel-label">Teks Hasil Perbaikan</div>
+                  <button class="btn btn-ghost btn-sm" id="copyImprovedBtn">⎘ Salin Hasil</button>
+                </div>
+                <div class="text-panel improved-panel" id="improvedTextPanel"></div>
+              </div>
+
+              <!-- Compare -->
+              <div class="panel-view hidden" id="view-compare">
+                <div class="compare-columns">
+                  <div class="compare-col">
+                    <div class="panel-label">Teks Asli</div>
+                    <div class="text-panel compare-panel" id="compareOrigPanel"></div>
+                  </div>
+                  <div class="compare-col">
+                    <div class="panel-label panel-label-gold">Teks Hasil Perbaikan</div>
+                    <div class="text-panel compare-panel" id="compareImpPanel"></div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+
+            <!-- What was changed -->
+            <div class="change-log hidden" id="changeLog">
+              <h4 class="change-log-title">Apa yang Diperbaiki?</h4>
+              <div id="changeLogList"></div>
+            </div>
+
+            <!-- Disclaimer -->
+            <div class="disclaimer-box mt-1">
+              <span class="info-icon">⚠</span>
+              <p>Writing Improver membantu meningkatkan kejelasan, variasi, dan naturalness tulisan. Hasil analisis bukan bukti pasti tentang asal-usul tulisan dan <strong>tidak menjamin hasil pada alat pemeriksa AI pihak ketiga</strong>.</p>
+            </div>
+          </div>
+
+          <!-- ══════════════════════════════════════════════════════
+               BEFORE / AFTER COMPARISON
+               ══════════════════════════════════════════════════════ -->
+          <div class="card hidden" id="comparisonCard">
+            <div class="section-badge gold">Langkah 7</div>
+            <h3 class="card-title">Perbandingan Pola Tulisan</h3>
+            <p class="card-subtitle">Perbandingan karakteristik tulisan sebelum dan sesudah perbaikan — bukan klaim asal-usul tulisan</p>
+
+            <!-- Comparison table -->
+            <div class="comparison-table-wrapper">
+              <table class="comparison-table" id="comparisonTable">
+                <thead>
+                  <tr>
+                    <th>Metrik</th>
+                    <th>Teks Asli</th>
+                    <th>Setelah Perbaikan</th>
+                    <th>Perubahan</th>
+                  </tr>
+                </thead>
+                <tbody id="comparisonTableBody"></tbody>
+              </table>
+            </div>
+
+            <!-- Comparison charts -->
+            <div class="charts-grid" style="margin-top:1.25rem;">
+              <div class="card chart-card" style="background:var(--bg-card-alt);">
+                <h4 class="card-title">Radar: Pola Sebelum vs Sesudah</h4>
+                <div class="chart-container" style="min-height:260px;">
+                  <canvas id="chartCompareRadar" aria-label="Radar perbandingan"></canvas>
+                </div>
+              </div>
+              <div class="card chart-card" style="background:var(--bg-card-alt);">
+                <h4 class="card-title">Perbandingan Metrik Utama</h4>
+                <div class="chart-container chart-bar-container">
+                  <canvas id="chartCompareBar" aria-label="Bar perbandingan"></canvas>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div><!-- end resultsArea -->
       </section>
 
       <!-- ===== PAGE: GUIDE ===== -->

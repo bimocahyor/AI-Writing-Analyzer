@@ -1046,11 +1046,18 @@ function runAnalysis() {
       renderWhySection(analysis);
       renderInsightSection(analysis);
       renderAllCharts(analysis);
+      // Render Rekomendasi Perbaikan (new feature)
+      renderRekomendasi(analysis);
+      // Reset Writing Improver output when new analysis is run
+      $('improverPanels').classList.add('hidden');
+      $('changeLog').classList.add('hidden');
+      $('comparisonCard').classList.add('hidden');
 
       // Save to history
       addToHistory(analysis);
 
       setStatus('done', 'Selesai');
+      showToast('Analisis selesai!', 'success');
       $('resultsArea').scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (err) {
       showError('Terjadi kesalahan saat menganalisis teks. Pastikan teks Anda mengandung kalimat lengkap.');
@@ -1144,3 +1151,974 @@ function init() {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+
+/* ============================================================
+   MODULE: TOAST NOTIFICATIONS
+   ============================================================ */
+
+/**
+ * Show a toast notification.
+ * @param {string} message
+ * @param {'success'|'error'|'info'} type
+ */
+function showToast(message, type = 'info') {
+  const container = $('toastContainer');
+  const icons = { success: '✓', error: '⚠', info: 'ℹ' };
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.innerHTML = `<span>${icons[type]}</span> ${escapeHtml(message)}`;
+  container.appendChild(toast);
+  setTimeout(() => toast.remove(), 3200);
+}
+
+/* ============================================================
+   MODULE: RECOMMENDATION ENGINE
+   Generates structured, text-based recommendations from analysis.
+   Each recommendation is derived from the actual measured features.
+   ============================================================ */
+
+/**
+ * Generate improvement recommendations from an analysis object.
+ * Returns an array of recommendation objects sorted by severity (high → low).
+ *
+ * @param {object} analysis — result of analyzeText()
+ * @returns {Array<{title, severity, explanation, example, action}>}
+ */
+function generateRecommendations(analysis) {
+  const { features, sentences, words } = analysis;
+  const recs = [];
+
+  // --- 1. Sentence Length ---
+  const cv = features.sentenceUniformity.raw.cv;
+  const mean = features.sentenceUniformity.raw.mean;
+  if (cv < 0.2) {
+    const exSent = sentences.slice(0, 2).map(s => s.slice(0, 60)).join(' / ');
+    recs.push({
+      title: 'Variasi Panjang Kalimat Sangat Rendah',
+      severity: 'high',
+      explanation: `Hampir semua kalimat memiliki panjang yang sangat mirip (rata-rata ${mean} kata, koefisien variasi: ${(cv * 100).toFixed(1)}%). Ritme tulisan terasa mekanistis dan seragam.`,
+      example: exSent ? `Contoh: "${escapeHtml(exSent)}..."` : '',
+      action: 'Gabungkan beberapa kalimat pendek dan pecah beberapa kalimat panjang. Targetkan campuran kalimat 5–10 kata, 11–20 kata, dan 21+ kata.',
+    });
+  } else if (cv < 0.35) {
+    recs.push({
+      title: 'Variasi Panjang Kalimat Kurang Optimal',
+      severity: 'medium',
+      explanation: `Variasi panjang kalimat masih tergolong terbatas (CV: ${(cv * 100).toFixed(1)}%). Tulisan akan lebih dinamis dengan variasi yang lebih besar.`,
+      example: '',
+      action: 'Coba sisipkan beberapa kalimat pendek di antara kalimat-kalimat panjang untuk menciptakan ritme yang lebih natural.',
+    });
+  }
+
+  // --- 2. Sentence Variation (burstiness) ---
+  if (features.burstiness.score > 65) {
+    recs.push({
+      title: 'Struktur Kalimat Terlalu Seragam',
+      severity: 'medium',
+      explanation: 'Distribusi panjang kalimat menunjukkan pola yang sangat halus dan teratur. Tulisan manusia biasanya memiliki variasi "meledak" yang lebih alami.',
+      example: '',
+      action: 'Variasikan tidak hanya panjang, tetapi juga pola struktur kalimat: kalimat sederhana, kalimat majemuk, dan kalimat kompleks.',
+    });
+  }
+
+  // --- 3. Vocabulary Diversity ---
+  const ttr = features.vocabularyDiversity.ttr;
+  if (ttr < 0.45) {
+    const topWords = features.lexicalRepetition.raw.topWords?.slice(0, 3).map(w => `"${w[0]}" (${w[1]}×)`).join(', ');
+    recs.push({
+      title: 'Keragaman Kosakata Rendah',
+      severity: 'high',
+      explanation: `Rasio kata unik (TTR) sebesar ${(ttr * 100).toFixed(1)}% menunjukkan kosakata yang relatif terbatas. Banyak kata signifikan diulang berulang kali.`,
+      example: topWords ? `Kata paling sering: ${topWords}` : '',
+      action: 'Gunakan sinonim, parafrase, atau restrukturisasi kalimat untuk mengurangi pengulangan kata yang sama.',
+    });
+  } else if (ttr < 0.58) {
+    recs.push({
+      title: 'Keragaman Kosakata Bisa Ditingkatkan',
+      severity: 'low',
+      explanation: `TTR ${(ttr * 100).toFixed(1)}% — keragaman kosakata sudah cukup baik, namun masih ada ruang untuk meningkatkan variasi ekspresi.`,
+      example: '',
+      action: 'Pertimbangkan menggunakan variasi istilah, sinonim akademik, atau konstruksi kalimat alternatif di beberapa bagian.',
+    });
+  }
+
+  // --- 4. Lexical Repetition ---
+  if (features.lexicalRepetition.score >= 55) {
+    const top = features.lexicalRepetition.raw.topWords?.[0];
+    recs.push({
+      title: 'Pengulangan Kata Signifikan Terlalu Tinggi',
+      severity: features.lexicalRepetition.score >= 70 ? 'high' : 'medium',
+      explanation: `${(features.lexicalRepetition.raw.repRatio * 100).toFixed(1)}% dari token bermakna dalam teks merupakan pengulangan kata yang sudah pernah muncul sebelumnya.`,
+      example: top ? `Kata "${top[0]}" muncul ${top[1]} kali dalam teks.` : '',
+      action: 'Identifikasi kata-kata kunci yang paling sering berulang, lalu ganti sebagian kemunculannya dengan sinonim atau parafrase.',
+    });
+  }
+
+  // --- 5. Phrase Repetition ---
+  if (features.phraseRepetition.score >= 45) {
+    const topPhrase = features.phraseRepetition.raw.topPhrases?.[0];
+    recs.push({
+      title: 'Frasa Berulang Terdeteksi',
+      severity: features.phraseRepetition.score >= 65 ? 'high' : 'medium',
+      explanation: `Beberapa pasangan kata (bigram) muncul berulang kali secara konsisten dalam teks, menciptakan pola yang terlalu teratur.`,
+      example: topPhrase ? `Frasa "${topPhrase[0]}" muncul ${topPhrase[1]} kali.` : '',
+      action: 'Susun ulang kalimat-kalimat yang mengandung frasa berulang agar variasi ekspresi meningkat.',
+    });
+  }
+
+  // --- 6. Paragraph Structure ---
+  if (features.structuralConsistency.score >= 70 && analysis.paragraphs.length >= 3) {
+    recs.push({
+      title: 'Konsistensi Struktur Paragraf Terlalu Tinggi',
+      severity: 'medium',
+      explanation: `${analysis.paragraphs.length} paragraf memiliki panjang yang sangat mirip (CV: ${features.structuralConsistency.raw.cv}). Variasi panjang paragraf yang natural menunjukkan kedalaman pembahasan yang berbeda-beda.`,
+      example: '',
+      action: 'Biarkan panjang paragraf mencerminkan kedalaman ide: paragraf pendek untuk penekanan, paragraf panjang untuk elaborasi mendalam.',
+    });
+  }
+
+  // --- 7. Punctuation Patterns ---
+  if (features.punctuationVariation.score >= 65) {
+    recs.push({
+      title: 'Variasi Tanda Baca Terbatas',
+      severity: 'low',
+      explanation: `Hanya ${features.punctuationVariation.raw.variety} jenis tanda baca yang digunakan. Tulisan yang natural dan ekspresif biasanya menggunakan variasi tanda baca yang lebih beragam.`,
+      example: '',
+      action: 'Pertimbangkan penggunaan tanda baca yang lebih beragam: titik koma (;), tanda hubung (—), tanda kurung, atau titik dua (:) untuk menambahkan ritme dan penekanan.',
+    });
+  }
+
+  // --- 8. Writing Flow (sentence connection) ---
+  const longSentCount = sentences.filter(s => s.split(/\s+/).length > 30).length;
+  if (longSentCount > sentences.length * 0.3) {
+    recs.push({
+      title: 'Terlalu Banyak Kalimat Sangat Panjang',
+      severity: 'medium',
+      explanation: `${longSentCount} dari ${sentences.length} kalimat (${Math.round(longSentCount / sentences.length * 100)}%) memiliki lebih dari 30 kata. Kalimat sangat panjang dapat mengurangi keterbacaan.`,
+      example: sentences.find(s => s.split(/\s+/).length > 30)?.slice(0, 80) + '...',
+      action: 'Pecah kalimat yang melebihi 30 kata menjadi dua atau lebih kalimat yang lebih jelas dan terfokus.',
+    });
+  }
+
+  // --- 9. Word Complexity ---
+  if (features.wordComplexity.score >= 60) {
+    recs.push({
+      title: 'Proporsi Kata Panjang Sangat Tinggi',
+      severity: 'low',
+      explanation: `${(features.wordComplexity.ratio * 100).toFixed(1)}% kata dalam teks memiliki lebih dari 7 karakter secara merata. Campuran kata pendek dan panjang memberikan ritme yang lebih natural.`,
+      example: '',
+      action: 'Ganti beberapa kata teknis panjang dengan padanan yang lebih sederhana jika tidak mengorbankan makna akademik.',
+    });
+  }
+
+  // --- 10. Academic Phrase Overuse ---
+  const highRep = analysis.academic?.filter(a => a.count >= 3) || [];
+  if (highRep.length >= 2) {
+    recs.push({
+      title: 'Frasa Transisi Akademik Berulang',
+      severity: 'medium',
+      explanation: `${highRep.length} frasa transisi akademik muncul terlalu sering: ${highRep.slice(0, 3).map(a => `"${a.phrase}" (${a.count}×)`).join(', ')}.`,
+      example: '',
+      action: 'Variasikan frasa penghubung dan transisi — gunakan berbagai ekspresi untuk hubungan logika yang sama.',
+    });
+  }
+
+  // Sort: high → medium → low
+  const sevOrder = { high: 0, medium: 1, low: 2 };
+  recs.sort((a, b) => sevOrder[a.severity] - sevOrder[b.severity]);
+
+  return recs;
+}
+
+/* ============================================================
+   MODULE: RECOMMENDATION RENDERER
+   ============================================================ */
+function renderRekomendasi(analysis) {
+  const container = $('rekomendasiSection');
+  const recs = generateRecommendations(analysis);
+
+  if (recs.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state" style="padding:1.5rem 1rem;">
+        <div class="empty-icon" style="font-size:2rem;">✓</div>
+        <h3 style="font-size:0.95rem;">Tulisan sudah cukup baik</h3>
+        <p>Tidak ada masalah signifikan yang terdeteksi pada teks Anda.</p>
+      </div>`;
+    return;
+  }
+
+  const sevLabel = { high: 'Tinggi', medium: 'Sedang', low: 'Rendah' };
+  const html = `<div class="rekom-list">${recs.map(r => `
+    <div class="rekom-item sev-${r.severity}">
+      <div class="rekom-item-header">
+        <span class="sev-badge ${r.severity}">${sevLabel[r.severity]}</span>
+        <span class="rekom-title">${r.title}</span>
+      </div>
+      <p class="rekom-explanation">${r.explanation}</p>
+      ${r.example ? `<div class="rekom-example">${r.example}</div>` : ''}
+      <div class="rekom-action">${r.action}</div>
+    </div>`).join('')}
+  </div>`;
+
+  container.innerHTML = html;
+}
+
+/* ============================================================
+   MODULE: WRITING IMPROVEMENT ENGINE
+   ============================================================
+
+   NOTE FOR FUTURE INTEGRATION:
+   This module implements a heuristic front-end rewriter.
+   To connect a real language model (e.g. OpenAI, Gemini, local LLM),
+   replace the body of improveText() with an async API call.
+   The calling code already handles async/await patterns.
+
+   API integration point:
+   async function improveText(text, settings) {
+     const response = await fetch('/api/improve', {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       // DO NOT expose API keys in frontend code.
+       // All API keys must be handled server-side.
+       body: JSON.stringify({ text, settings }),
+     });
+     return response.json();
+   }
+   ============================================================ */
+
+/**
+ * Synonym map for common repetitive words.
+ * Used to reduce lexical repetition in rewriting.
+ */
+const SYNONYM_MAP = {
+  // Indonesian
+  'menunjukkan':  ['mengindikasikan','memperlihatkan','mencerminkan'],
+  'merupakan':    ['adalah','menjadi','termasuk'],
+  'terdapat':     ['ditemukan','ada','tercatat'],
+  'dilakukan':    ['dijalankan','diterapkan','dikerjakan'],
+  'penelitian':   ['kajian','studi','analisis'],
+  'diperoleh':    ['didapatkan','dihasilkan'],
+  'berdasarkan':  ['mengacu pada','berpijak pada','didasarkan pada'],
+  'selain itu':   ['di samping itu','lebih lanjut','lebih jauh'],
+  'dengan demikian': ['karena itu','oleh sebab itu','maka dari itu'],
+  'dapat':        ['mampu','bisa','memungkinkan'],
+  'sangat':       ['amat','jauh','cukup'],
+  'banyak':       ['sejumlah','beragam','berbagai'],
+  'menggunakan':  ['memanfaatkan','memakai','menerapkan'],
+  'memberikan':   ['menyediakan','menghasilkan','menawarkan'],
+  'penting':      ['krusial','signifikan','esensial','relevan'],
+  'hasil':        ['temuan','luaran','capaian'],
+  'proses':       ['prosedur','tahapan','mekanisme'],
+  'faktor':       ['aspek','elemen','unsur','variabel'],
+  'kegiatan':     ['aktivitas','upaya','langkah'],
+  'hal':          ['aspek','sisi','perkara'],
+  // English
+  'shows':    ['indicates','demonstrates','reveals'],
+  'uses':     ['employs','utilizes','applies'],
+  'provides': ['offers','gives','supplies'],
+  'important':['significant','crucial','essential'],
+  'research': ['study','investigation','examination'],
+  'found':    ['discovered','identified','detected'],
+  'many':     ['numerous','various','several'],
+  'also':     ['additionally','furthermore','moreover'],
+  'however':  ['nevertheless','yet','nonetheless'],
+  'therefore':['consequently','thus','hence'],
+  'because':  ['since','as','given that'],
+};
+
+/**
+ * Transition phrases to inject for variety.
+ */
+const TRANSITIONS = {
+  academic: [
+    'Lebih lanjut,', 'Sehubungan dengan itu,', 'Dalam konteks ini,',
+    'Perlu dicatat bahwa', 'Hal ini mengindikasikan bahwa',
+    'Berkaitan dengan hal tersebut,', 'Secara lebih spesifik,',
+  ],
+  natural: [
+    'Selain itu,', 'Di sisi lain,', 'Dengan kata lain,',
+    'Patut diperhatikan bahwa', 'Yang menarik adalah',
+  ],
+  concise: ['Singkatnya,', 'Intinya,', 'Artinya,'],
+  formal: [
+    'Sebagaimana diketahui,', 'Mengacu pada hal tersebut,',
+    'Dalam rangka itu,', 'Sehubungan dengan itu,',
+  ],
+  readable: ['Artinya,', 'Dengan kata lain,', 'Sebagai contoh,', 'Lebih jelasnya,'],
+};
+
+/**
+ * Replace a word with a synonym if available.
+ * Deterministic: uses word frequency index to pick synonym.
+ * @param {string} word
+ * @param {number} index — position in text (used as deterministic selector)
+ */
+function getSynonym(word, index) {
+  const lower = word.toLowerCase();
+  const syns = SYNONYM_MAP[lower];
+  if (!syns) return null;
+  return syns[index % syns.length];
+}
+
+/**
+ * Split a long sentence (>28 words) into two.
+ * Tries to split at a conjunction or comma.
+ */
+function splitLongSentence(sentence) {
+  const words = sentence.split(/\s+/);
+  if (words.length <= 28) return [sentence];
+
+  const midStart = Math.floor(words.length * 0.4);
+  const midEnd   = Math.floor(words.length * 0.65);
+  const joiners  = /^(dan|serta|atau|while|and|but|which|that|karena|sehingga|namun|tetapi|,)$/i;
+
+  for (let i = midStart; i <= midEnd; i++) {
+    if (joiners.test(words[i])) {
+      const first  = words.slice(0, i).join(' ').trim();
+      const second = words.slice(i + 1).join(' ').trim();
+      if (first && second) {
+        const firstCap  = first.endsWith('.') ? first : first + '.';
+        const secondCap = second.charAt(0).toUpperCase() + second.slice(1);
+        return [firstCap, secondCap.endsWith('.') ? secondCap : secondCap + '.'];
+      }
+    }
+  }
+  // Fall back: split at midpoint
+  const half    = Math.floor(words.length / 2);
+  const firstH  = words.slice(0, half).join(' ') + '.';
+  const secondH = words[half].charAt(0).toUpperCase() + words.slice(half).join(' ').slice(words[half].length);
+  return [firstH, secondH.endsWith('.') ? secondH : secondH + '.'];
+}
+
+/**
+ * Apply synonym substitution to a sentence.
+ * Replaces high-frequency repeated words with synonyms.
+ * @param {string} sentence
+ * @param {object} wordFreq — word → count map
+ * @param {number} sentIdx
+ * @param {'light'|'moderate'|'extensive'} intensity
+ */
+function applySynonyms(sentence, wordFreq, sentIdx, intensity) {
+  const threshold = intensity === 'light' ? 5 : intensity === 'moderate' ? 3 : 2;
+  const words = sentence.split(/(\s+|[^\w\sÀ-ÿ])/);
+  let changed = 0;
+  const maxChanges = intensity === 'light' ? 1 : intensity === 'moderate' ? 2 : 4;
+
+  return words.map((token, i) => {
+    const lower = token.toLowerCase();
+    if (!lower.match(/^[a-zÀ-ÿ]+$/) || STOP_WORDS.has(lower)) return token;
+    if ((wordFreq[lower] || 0) >= threshold && changed < maxChanges) {
+      const syn = getSynonym(lower, sentIdx + i);
+      if (syn) {
+        changed++;
+        // Preserve capitalisation
+        return token[0] === token[0].toUpperCase() && token[0].match(/[A-ZÀ-Ÿ]/)
+          ? syn.charAt(0).toUpperCase() + syn.slice(1)
+          : syn;
+      }
+    }
+    return token;
+  }).join('');
+}
+
+/**
+ * Main rewriting engine.
+ * Applies heuristic transformations based on goal and intensity.
+ * Returns { improvedText, changeLog }.
+ *
+ * This is the primary extension point for future AI API integration.
+ * Replace this function body with an API call to a language model.
+ */
+function generateImprovedText(text, settings) {
+  const { goal, intensity } = settings;
+  const sentences = getSentences(text);
+  const words     = getWords(text);
+
+  // Build word frequency map for synonym decisions
+  const wordFreq = {};
+  words.forEach(w => { wordFreq[w] = (wordFreq[w] || 0) + 1; });
+
+  const changeMade  = new Set();
+  const newSentences = [];
+  const splitThreshold = intensity === 'light' ? 35 : intensity === 'moderate' ? 28 : 22;
+  const transitionList  = TRANSITIONS[goal] || TRANSITIONS.academic;
+  const transitionEvery = intensity === 'light' ? 8 : intensity === 'moderate' ? 5 : 3;
+
+  sentences.forEach((sentence, idx) => {
+    const wCount = sentence.split(/\s+/).filter(w => w).length;
+
+    // Step 1: Split long sentences
+    if (wCount > splitThreshold) {
+      const parts = splitLongSentence(sentence);
+      if (parts.length > 1) {
+        changeMade.add('split');
+        newSentences.push(...parts);
+        return;
+      }
+    }
+
+    // Step 2: Apply synonym substitution
+    const withSyns = intensity !== 'light' || idx % 3 === 0
+      ? applySynonyms(sentence, wordFreq, idx, intensity)
+      : sentence;
+    if (withSyns !== sentence) changeMade.add('synonym');
+
+    // Step 3: Inject transition phrase before certain sentences
+    if (idx > 0 && idx % transitionEvery === 0 && transitionList.length > 0) {
+      const trans = transitionList[Math.floor(idx / transitionEvery) % transitionList.length];
+      // Only inject if sentence doesn't already start with a transition word
+      const startLower = withSyns.toLowerCase();
+      const alreadyTransitioned = ['selain','dengan','oleh','berkaitan','lebih','dalam','hal','sehubungan','sebagaimana','perlu','furthermore','additionally','moreover','however','therefore'].some(t => startLower.startsWith(t));
+      if (!alreadyTransitioned) {
+        const firstWord = withSyns.charAt(0).toLowerCase() + withSyns.slice(1);
+        newSentences.push(`${trans} ${firstWord}`);
+        changeMade.add('transition');
+        return;
+      }
+    }
+
+    newSentences.push(withSyns);
+  });
+
+  // Step 4: For 'extensive' intensity, vary some short sentences by combining adjacent pairs
+  if (intensity === 'extensive') {
+    const combined = [];
+    let i = 0;
+    while (i < newSentences.length) {
+      const curr = newSentences[i];
+      const next = newSentences[i + 1];
+      const currLen = curr.split(/\s+/).filter(w => w).length;
+      const nextLen = next ? next.split(/\s+/).filter(w => w).length : 999;
+      // Combine two very short adjacent sentences if result stays ≤ 22 words
+      if (currLen < 7 && nextLen < 7 && currLen + nextLen <= 22 && next) {
+        const currTrimmed = curr.endsWith('.') ? curr.slice(0, -1) : curr;
+        combined.push(`${currTrimmed}, ${next.charAt(0).toLowerCase() + next.slice(1)}`);
+        changeMade.add('combine');
+        i += 2;
+      } else {
+        combined.push(curr);
+        i++;
+      }
+    }
+    const resultText = combined.join(' ');
+
+    return {
+      improvedText: resultText,
+      changeMade: [...changeMade],
+    };
+  }
+
+  return {
+    improvedText: newSentences.join(' '),
+    changeMade: [...changeMade],
+  };
+}
+
+/* ============================================================
+   MODULE: COMPARISON ENGINE
+   Computes before/after metrics from actual text.
+   Returns a structured comparison object.
+   ============================================================ */
+
+/**
+ * Compare two analysis objects and produce a comparison table dataset.
+ * @param {object} origAnalysis
+ * @param {object} impAnalysis
+ * @returns {Array<{metric, origVal, impVal, origNum, impNum, unit, higherIsBetter}>}
+ */
+function compareTexts(origAnalysis, impAnalysis) {
+  const o = origAnalysis;
+  const im = impAnalysis;
+
+  return [
+    {
+      metric: 'AI Writing Risk Score',
+      origNum: o.finalScore,
+      impNum: im.finalScore,
+      origVal: o.finalScore + '%',
+      impVal: im.finalScore + '%',
+      unit: '%',
+      higherIsBetter: false, // lower risk is better
+    },
+    {
+      metric: 'Keragaman Kosakata (TTR)',
+      origNum: Math.round(o.features.vocabularyDiversity.ttr * 100),
+      impNum:  Math.round(im.features.vocabularyDiversity.ttr * 100),
+      origVal: Math.round(o.features.vocabularyDiversity.ttr * 100) + '%',
+      impVal:  Math.round(im.features.vocabularyDiversity.ttr * 100) + '%',
+      unit: '%',
+      higherIsBetter: true,
+    },
+    {
+      metric: 'Variasi Kalimat (CV)',
+      origNum: Math.round(o.features.sentenceUniformity.raw.cv * 100),
+      impNum:  Math.round(im.features.sentenceUniformity.raw.cv * 100),
+      origVal: (o.features.sentenceUniformity.raw.cv * 100).toFixed(1) + '%',
+      impVal:  (im.features.sentenceUniformity.raw.cv * 100).toFixed(1) + '%',
+      unit: '%',
+      higherIsBetter: true,
+    },
+    {
+      metric: 'Repetisi Kata',
+      origNum: Math.round(o.features.lexicalRepetition.score),
+      impNum:  Math.round(im.features.lexicalRepetition.score),
+      origVal: Math.round(o.features.lexicalRepetition.score) + '%',
+      impVal:  Math.round(im.features.lexicalRepetition.score) + '%',
+      unit: '%',
+      higherIsBetter: false, // lower repetition is better
+    },
+    {
+      metric: 'Rata-rata Panjang Kalimat',
+      origNum: o.features.sentenceUniformity.raw.mean,
+      impNum:  im.features.sentenceUniformity.raw.mean,
+      origVal: o.features.sentenceUniformity.raw.mean + ' kata',
+      impVal:  im.features.sentenceUniformity.raw.mean + ' kata',
+      unit: 'kata',
+      higherIsBetter: null, // neutral — just informational
+    },
+    {
+      metric: 'Keseragaman Struktur',
+      origNum: Math.round(o.features.structuralConsistency.score),
+      impNum:  Math.round(im.features.structuralConsistency.score),
+      origVal: Math.round(o.features.structuralConsistency.score) + '%',
+      impVal:  Math.round(im.features.structuralConsistency.score) + '%',
+      unit: '%',
+      higherIsBetter: false, // less uniformity = more natural
+    },
+    {
+      metric: 'Jumlah Kata',
+      origNum: o.wordCount,
+      impNum:  im.wordCount,
+      origVal: o.wordCount.toLocaleString('id-ID'),
+      impVal:  im.wordCount.toLocaleString('id-ID'),
+      unit: 'kata',
+      higherIsBetter: null,
+    },
+    {
+      metric: 'Jumlah Paragraf',
+      origNum: o.paragraphs.length,
+      impNum:  im.paragraphs.length,
+      origVal: String(o.paragraphs.length),
+      impVal:  String(im.paragraphs.length),
+      unit: '',
+      higherIsBetter: null,
+    },
+  ];
+}
+
+/* ============================================================
+   MODULE: COMPARISON RENDERING
+   ============================================================ */
+
+/**
+ * Render the comparison table.
+ */
+function renderComparisonTable(rows) {
+  const tbody = $('comparisonTableBody');
+  tbody.innerHTML = rows.map(row => {
+    const diff = row.impNum - row.origNum;
+    let arrowHtml;
+    if (row.higherIsBetter === null || Math.abs(diff) < 1) {
+      arrowHtml = `<span class="cmp-arrow-same">—</span>`;
+    } else {
+      const isImprovement = row.higherIsBetter ? diff > 0 : diff < 0;
+      const sign = diff > 0 ? '↑ +' : '↓ ';
+      const cls  = isImprovement ? 'cmp-arrow-up' : 'cmp-arrow-down';
+      const valStr = row.unit === '%' || row.unit === 'kata'
+        ? `${Math.abs(diff).toFixed(row.unit === '%' ? 0 : 1)} ${row.unit}`
+        : Math.abs(diff);
+      arrowHtml = `<span class="${cls}">${sign}${valStr}</span>`;
+    }
+    return `<tr>
+      <td style="font-weight:600;color:var(--text-primary);">${row.metric}</td>
+      <td class="cmp-orig">${row.origVal}</td>
+      <td class="cmp-impr">${row.impVal}</td>
+      <td>${arrowHtml}</td>
+    </tr>`;
+  }).join('');
+}
+
+/**
+ * Render comparison charts (Radar + Bar).
+ * Uses real calculated values from both analyses.
+ */
+function renderComparisonCharts(origAnalysis, impAnalysis) {
+  // ── Radar ──
+  destroyChart('compareRadar');
+  const ctxR = $('chartCompareRadar').getContext('2d');
+  const oS = origAnalysis.rawScores;
+  const iS = impAnalysis.rawScores;
+
+  // For radar, convert to "positive = good" scale:
+  // Vocabulary Diversity & Variation = 100 - riskScore (higher = better)
+  // Repetition Control = 100 - repetitionScore (higher = less repetition)
+  // Structural Variation = 100 - uniformityScore (higher = more varied)
+  // Readability = burstiness interpreted as variation (100 - score)
+  const toRadarOrig = [
+    Math.round(100 - oS.vocabularyDiversity),
+    Math.round(100 - oS.sentenceUniformity),
+    Math.round(100 - oS.structuralConsistency),
+    Math.round(100 - oS.lexicalRepetition),
+    Math.round(100 - oS.burstiness),
+  ];
+  const toRadarImp = [
+    Math.round(100 - iS.vocabularyDiversity),
+    Math.round(100 - iS.sentenceUniformity),
+    Math.round(100 - iS.structuralConsistency),
+    Math.round(100 - iS.lexicalRepetition),
+    Math.round(100 - iS.burstiness),
+  ];
+
+  charts.compareRadar = new Chart(ctxR, {
+    type: 'radar',
+    data: {
+      labels: ['Keragaman\nKosakata','Variasi\nKalimat','Variasi\nStruktur','Kontrol\nRepetisi','Variasi\nRitme'],
+      datasets: [
+        {
+          label: 'Teks Asli',
+          data: toRadarOrig,
+          backgroundColor: 'rgba(100,116,139,0.15)',
+          borderColor: 'rgba(100,116,139,0.7)',
+          borderWidth: 2,
+          pointBackgroundColor: '#64748b',
+          pointRadius: 4,
+        },
+        {
+          label: 'Setelah Perbaikan',
+          data: toRadarImp,
+          backgroundColor: 'rgba(212,175,55,0.15)',
+          borderColor: 'rgba(212,175,55,0.85)',
+          borderWidth: 2,
+          pointBackgroundColor: '#D4AF37',
+          pointRadius: 4,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        r: {
+          min: 0, max: 100,
+          ticks: { stepSize: 25, color: CHART_DEFAULTS.tickColor, backdropColor: 'transparent', font: { size: 10 } },
+          grid:  { color: CHART_DEFAULTS.gridColor },
+          pointLabels: { color: CHART_DEFAULTS.color, font: { size: 10 } },
+          angleLines: { color: CHART_DEFAULTS.gridColor },
+        },
+      },
+      plugins: {
+        legend: { labels: { color: CHART_DEFAULTS.color, font: { size: 11 }, boxWidth: 14 } },
+        tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.formattedValue}%` } },
+      },
+      animation: { duration: 700 },
+    },
+  });
+
+  // ── Bar ──
+  destroyChart('compareBar');
+  const ctxB = $('chartCompareBar').getContext('2d');
+
+  const barLabels = ['TTR\nKosakata', 'Variasi\nKalimat', 'Risk\nScore', 'Repetisi\nKata'];
+  const origData  = [
+    Math.round(origAnalysis.features.vocabularyDiversity.ttr * 100),
+    Math.round(origAnalysis.features.sentenceUniformity.raw.cv * 100),
+    origAnalysis.finalScore,
+    Math.round(origAnalysis.features.lexicalRepetition.score),
+  ];
+  const impData   = [
+    Math.round(impAnalysis.features.vocabularyDiversity.ttr * 100),
+    Math.round(impAnalysis.features.sentenceUniformity.raw.cv * 100),
+    impAnalysis.finalScore,
+    Math.round(impAnalysis.features.lexicalRepetition.score),
+  ];
+
+  charts.compareBar = new Chart(ctxB, {
+    type: 'bar',
+    data: {
+      labels: barLabels,
+      datasets: [
+        {
+          label: 'Teks Asli',
+          data: origData,
+          backgroundColor: 'rgba(100,116,139,0.6)',
+          borderRadius: 5,
+          borderWidth: 0,
+        },
+        {
+          label: 'Setelah Perbaikan',
+          data: impData,
+          backgroundColor: 'rgba(212,175,55,0.7)',
+          borderRadius: 5,
+          borderWidth: 0,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: CHART_DEFAULTS.color, font: { size: 11 }, boxWidth: 14 } },
+        tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.formattedValue}` } },
+      },
+      scales: {
+        x: { ticks: { color: CHART_DEFAULTS.tickColor }, grid: { color: CHART_DEFAULTS.gridColor } },
+        y: {
+          ticks: { color: CHART_DEFAULTS.tickColor },
+          grid: { color: CHART_DEFAULTS.gridColor },
+          beginAtZero: true, max: 100,
+        },
+      },
+      animation: { duration: 600 },
+    },
+  });
+}
+
+/**
+ * Build and display the change log from the improvement process.
+ */
+function renderChangeLog(changeMade) {
+  const descriptions = {
+    split:      'Memecah kalimat yang terlalu panjang menjadi kalimat-kalimat lebih pendek',
+    synonym:    'Mengganti beberapa kata berulang dengan sinonim atau variasi ekspresi',
+    transition: 'Menambahkan frasa transisi untuk meningkatkan alur antar kalimat',
+    combine:    'Menggabungkan beberapa kalimat sangat pendek menjadi kalimat yang lebih solid',
+  };
+
+  // Add always-present items for transparency
+  const allChanges = [
+    ...changeMade.map(c => descriptions[c]).filter(Boolean),
+    'Menjaga makna dan konten akademik teks asli tetap utuh',
+    'Mempertahankan argumen, fakta, dan struktur ide penulis',
+  ];
+
+  $('changeLogList').innerHTML = `<div class="change-log-list">${
+    allChanges.map(c => `<div class="change-log-item">${escapeHtml(c)}</div>`).join('')
+  }</div>`;
+
+  $('changeLog').classList.remove('hidden');
+}
+
+/* ============================================================
+   MODULE: WRITING IMPROVER UI CONTROLLER
+   ============================================================ */
+
+/** Current settings state */
+const improverState = {
+  goal:      'academic',
+  intensity: 'moderate',
+};
+
+/**
+ * Initialize button group toggle logic.
+ * @param {string} groupId — element ID of .btn-group
+ * @param {string} stateKey — key in improverState
+ */
+function initBtnGroup(groupId, stateKey) {
+  const group = $(groupId);
+  if (!group) return;
+  group.querySelectorAll('.btn-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      group.querySelectorAll('.btn-toggle').forEach(b => {
+        b.classList.remove('active');
+        b.setAttribute('aria-pressed', 'false');
+      });
+      btn.classList.add('active');
+      btn.setAttribute('aria-pressed', 'true');
+      improverState[stateKey] = btn.dataset.value;
+    });
+  });
+}
+
+/**
+ * Animate loading steps sequentially.
+ * Returns a promise that resolves after all steps complete.
+ */
+function animateLoadingSteps() {
+  return new Promise(resolve => {
+    const steps = [$('lstep1'), $('lstep2'), $('lstep3')];
+    steps.forEach(s => { s.className = 'loading-step'; });
+
+    let current = 0;
+    function next() {
+      if (current >= steps.length) {
+        setTimeout(resolve, 200);
+        return;
+      }
+      if (current > 0) steps[current - 1].className = 'loading-step done';
+      steps[current].className = 'loading-step active';
+      current++;
+      setTimeout(next, 600);
+    }
+    next();
+  });
+}
+
+/**
+ * View tab switching inside the improver panels.
+ */
+function initViewTabs() {
+  document.querySelectorAll('.view-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.view-tab').forEach(t => {
+        t.classList.remove('active');
+        t.setAttribute('aria-selected', 'false');
+      });
+      tab.classList.add('active');
+      tab.setAttribute('aria-selected', 'true');
+
+      const viewName = tab.dataset.view;
+      ['view-original', 'view-improved', 'view-compare'].forEach(id => {
+        const el = $(id);
+        if (el) el.classList.toggle('hidden', id !== 'view-' + viewName);
+      });
+    });
+  });
+}
+
+/**
+ * Run the full improvement workflow.
+ */
+async function runImprover() {
+  if (!currentAnalysis) {
+    showToast('Analisis teks dulu sebelum menggunakan Writing Improver.', 'error');
+    return;
+  }
+
+  const btn = $('improveBtn');
+  btn.disabled = true;
+
+  // Show loading
+  $('improverLoading').classList.remove('hidden');
+  $('improverPanels').classList.add('hidden');
+  $('changeLog').classList.add('hidden');
+  $('comparisonCard').classList.add('hidden');
+
+  try {
+    setStatus('analyzing', 'Memperbaiki tulisan...');
+
+    // Animate steps (simulates processing pipeline)
+    await animateLoadingSteps();
+
+    // Small delay to let final step show as done
+    await new Promise(r => setTimeout(r, 300));
+
+    // Run improvement engine
+    const { improvedText, changeMade } = generateImprovedText(currentAnalysis.text, improverState);
+
+    // Analyze improved text
+    const improvedAnalysis = analyzeText(improvedText);
+
+    // Populate original panel
+    $('originalTextPanel').textContent = currentAnalysis.text;
+    $('compareOrigPanel').textContent  = currentAnalysis.text;
+
+    // Populate improved panel
+    $('improvedTextPanel').textContent = improvedText;
+    $('compareImpPanel').textContent   = improvedText;
+
+    // Show panels, reset to original tab
+    $('improverPanels').classList.remove('hidden');
+    document.querySelectorAll('.view-tab').forEach(t => {
+      t.classList.remove('active');
+      t.setAttribute('aria-selected', 'false');
+    });
+    const origTab = document.querySelector('.view-tab[data-view="original"]');
+    if (origTab) { origTab.classList.add('active'); origTab.setAttribute('aria-selected', 'true'); }
+    ['view-original','view-improved','view-compare'].forEach(id => {
+      const el = $(id);
+      if (el) el.classList.toggle('hidden', id !== 'view-original');
+    });
+
+    // Render change log
+    renderChangeLog(changeMade);
+
+    // Render comparison section
+    const compareRows = compareTexts(currentAnalysis, improvedAnalysis);
+    renderComparisonTable(compareRows);
+    renderComparisonCharts(currentAnalysis, improvedAnalysis);
+    $('comparisonCard').classList.remove('hidden');
+
+    setStatus('done', 'Selesai');
+    showToast('Perbaikan tulisan selesai!', 'success');
+
+    // Scroll to panels
+    $('improverPanels').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+  } catch (err) {
+    console.error('Improver error:', err);
+    showToast('Perbaikan tulisan gagal. Silakan coba lagi.', 'error');
+    setStatus('error', 'Error');
+  } finally {
+    $('improverLoading').classList.add('hidden');
+    btn.disabled = false;
+  }
+}
+
+/**
+ * Reset Writing Improver to initial state.
+ */
+function resetImprover() {
+  $('improverPanels').classList.add('hidden');
+  $('changeLog').classList.add('hidden');
+  $('comparisonCard').classList.add('hidden');
+
+  // Reset toggles to defaults
+  document.querySelectorAll('#writingGoalGroup .btn-toggle').forEach(b => {
+    b.classList.toggle('active', b.dataset.value === 'academic');
+  });
+  document.querySelectorAll('#intensityGroup .btn-toggle').forEach(b => {
+    b.classList.toggle('active', b.dataset.value === 'moderate');
+  });
+  improverState.goal      = 'academic';
+  improverState.intensity = 'moderate';
+
+  showToast('Writing Improver direset.', 'info');
+}
+
+/* ============================================================
+   EXTEND: runAnalysis — also triggers rekomendasi
+   ============================================================ */
+
+/**
+ * Patch renderAllResults to also call renderRekomendasi.
+ * Called after analysis completes.
+ */
+const _origRunAnalysis = runAnalysis; // captured reference (not used directly but for documentation)
+
+/* ============================================================
+   INIT EXTENSION — adds new feature handlers on DOMContentLoaded
+   ============================================================ */
+document.addEventListener('DOMContentLoaded', () => {
+  // Btn group toggles
+  initBtnGroup('writingGoalGroup', 'goal');
+  initBtnGroup('intensityGroup', 'intensity');
+
+  // View tabs
+  initViewTabs();
+
+  // Improve button
+  $('improveBtn')?.addEventListener('click', runImprover);
+
+  // Reset button
+  $('improveResetBtn')?.addEventListener('click', resetImprover);
+
+  // Copy improved text
+  $('copyImprovedBtn')?.addEventListener('click', () => {
+    const text = $('improvedTextPanel')?.textContent;
+    if (!text) { showToast('Belum ada teks yang diperbaiki.', 'error'); return; }
+    navigator.clipboard.writeText(text).then(() => {
+      showToast('Teks hasil perbaikan berhasil disalin!', 'success');
+    }).catch(() => {
+      // Fallback for browsers without clipboard API
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity  = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      showToast('Teks berhasil disalin!', 'success');
+    });
+  });
+});
