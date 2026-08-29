@@ -267,6 +267,7 @@
               </div>
               <div class="improver-actions">
                 <button class="btn btn-primary btn-improver" id="improveBtn">✦ Perbaiki Tulisan</button>
+                <button class="btn btn-ghost" id="improveAgainBtn" style="display:none;">↺ Perbaiki Lagi</button>
                 <button class="btn btn-ghost" id="improveResetBtn">Reset</button>
               </div>
             </div>
@@ -274,9 +275,9 @@
             <!-- Loading state -->
             <div class="improver-loading hidden" id="improverLoading" aria-live="polite">
               <div class="loading-steps">
-                <div class="loading-step" id="lstep1">Menganalisis pola tulisan...</div>
-                <div class="loading-step" id="lstep2">Menyusun rekomendasi...</div>
-                <div class="loading-step" id="lstep3">Memperbaiki struktur tulisan...</div>
+                <div class="loading-step" id="lstep1">Mendeteksi pola yang perlu diperbaiki...</div>
+                <div class="loading-step" id="lstep2">Menyusun dan memvalidasi revisi...</div>
+                <div class="loading-step" id="lstep3">Memilih hasil terbaik...</div>
               </div>
             </div>
 
@@ -319,6 +320,26 @@
                 </div>
               </div>
 
+            </div>
+
+            <!-- Evaluasi Hasil Perbaikan -->
+            <div class="evaluasi-card hidden" id="evaluasiCard">
+              <h4 class="evaluasi-title">Evaluasi Hasil Perbaikan</h4>
+              <div class="evaluasi-scores" id="evaluasiScores"></div>
+              <div class="evaluasi-status" id="evaluasiStatus"></div>
+            </div>
+
+            <!-- Fail-safe: shown when no candidate passed validation -->
+            <div class="improver-failsafe hidden" id="improverFailsafe" role="status">
+              <div class="failsafe-icon">⚠</div>
+              <div class="failsafe-body">
+                <p class="failsafe-title">Tidak Ada Revisi yang Lebih Baik Ditemukan</p>
+                <p class="failsafe-desc">Ketiga kandidat revisi otomatis tidak berhasil meningkatkan pola tulisan secara terukur. Teks asli dipertahankan untuk menjaga makna dan kualitas tulisan.</p>
+                <div class="failsafe-actions">
+                  <button class="btn btn-ghost btn-sm" id="failsafeUseOriginal">Gunakan Teks Asli</button>
+                  <button class="btn btn-ghost btn-sm" id="failsafeTryManual">Coba Perbaikan Manual</button>
+                </div>
+              </div>
             </div>
 
             <!-- What was changed -->
@@ -429,16 +450,42 @@
 
       <!-- ===== PAGE: HISTORY ===== -->
       <section class="page hidden" id="page-history">
-        <div class="card">
-          <div class="card-header-row">
-            <div>
-              <h2 class="card-title">Riwayat Analisis</h2>
-              <p class="card-subtitle">Hasil analisis sebelumnya tersimpan di browser Anda (localStorage)</p>
+
+        <!-- History List View -->
+        <div id="historyListView">
+          <div class="card">
+            <div class="card-header-row">
+              <div>
+                <h2 class="card-title">Riwayat Analisis</h2>
+                <p class="card-subtitle">Klik item untuk membuka kembali analisis lengkap</p>
+              </div>
+              <button class="btn btn-ghost btn-danger" id="clearHistoryBtn">Hapus Semua</button>
             </div>
-            <button class="btn btn-ghost btn-danger" id="clearHistoryBtn">Hapus Semua</button>
+            <!-- Search / Filter Bar -->
+            <div class="history-filter-bar">
+              <input type="search" id="historySearch" class="history-search" placeholder="Cari teks analisis..." aria-label="Cari riwayat" />
+              <select id="historyFilter" class="history-filter-select" aria-label="Filter riwayat">
+                <option value="newest">Terbaru</option>
+                <option value="oldest">Terlama</option>
+                <option value="low">Risiko Rendah</option>
+                <option value="moderate">Risiko Sedang</option>
+                <option value="high">Risiko Tinggi</option>
+                <option value="very-high">Risiko Sangat Tinggi</option>
+              </select>
+            </div>
+            <div id="historyList"></div>
           </div>
-          <div id="historyList"></div>
         </div>
+
+        <!-- History Detail View (hidden by default) -->
+        <div id="historyDetailView" class="hidden">
+          <div class="history-detail-nav">
+            <button class="btn btn-ghost btn-sm" id="backToHistoryBtn">← Kembali ke Riwayat</button>
+            <button class="btn btn-ghost btn-sm" id="reanalyzeBtn">↺ Analisis Ulang</button>
+          </div>
+          <div id="historyDetailContent"></div>
+        </div>
+
       </section>
 
       <!-- ===== PAGE: ABOUT ===== -->
