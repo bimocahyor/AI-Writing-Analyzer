@@ -137,6 +137,314 @@ function getParagraphs(text) {
 }
 
 /* ============================================================
+   MODULE: DOCUMENT STRUCTURE PARSER
+   Preserves titles, authors, headings, lists, citations,
+   quotations, and paragraph breaks across the improvement pipeline.
+   ============================================================ */
+
+/**
+ * Parse raw input text into a typed document object.
+ *
+ * Block types:
+ *   title      — short all-caps or title-case line at very start (≤10 words)
+ *   author     — "Oleh ..." / "By ..." line following title
+ *   heading    — short line followed by blank line, not ending in period
+ *   paragraph  — regular prose paragraph (rewritten by improver)
+ *   quotation  — line starting with " or ' or containing "…" block-quote marks
+ *   bullet     — line starting with - / • / * / →
+ *   numbered   — line starting with digit + "." or ")"
+ *   citation   — line that looks like a bibliographic reference
+ *   separator  — horizontal rule (---, ===, ***)
+ *   empty-line — preserved blank line between blocks
+ *
+ * @param {string} rawText
+ * @returns {{ title: string|null, author: string|null, blocks: Array<{type,content}> }}
+ */
+function parseDocument(rawText) {
+  if (!rawText || !rawText.trim()) return { title: null, author: null, blocks: [] };
+
+  // Split into raw lines preserving order
+  const lines = rawText.split('\n');
+  const blocks = [];
+  let i = 0;
+  let titleFound  = false;
+  let authorFound = false;
+  let detectedTitle  = null;
+  let detectedAuthor = null;
+
+  // ── Helper predicates ────────────────────────────────────────────────────
+  const isSeparator  = l => /^[-=*]{3,}\s*$/.test(l.trim());
+  const isBullet     = l => /^[\-•\*→]\s/.test(l.trim());
+  const isNumbered   = l => /^\d+[.)]\s/.test(l.trim());
+  const isCitation   = l => {
+    const t = l.trim();
+    // e.g. "Smith, J. (2020)." or "[1] Author..." or "Author, A. (Year)."
+    return /^\[?\d+\]/.test(t) || /^[A-Z][a-z]+,\s+[A-Z]\./.test(t) || /\(\d{4}\)/.test(t);
+  };
+  const isQuotation  = l => {
+    const t = l.trim();
+    return t.startsWith('"') || t.startsWith('\u201c') || t.startsWith('\u2018') || t.startsWith('>');
+  };
+  const isHeading    = l => {
+    const t = l.trim();
+    if (t.length === 0 || t.length > 100) return false;
+    if (t.endsWith('.') || t.endsWith('?') || t.endsWith('!')) return false;
+    const wc = t.split(/\s+/).length;
+    return wc <= 8 && wc >= 1;
+  };
+
+  // Buffer for accumulating multi-line paragraph content
+  let paraBuffer = [];
+
+  const flushPara = () => {
+    if (paraBuffer.length > 0) {
+      blocks.push({ type: 'paragraph', content: paraBuffer.join(' ').trim() });
+      paraBuffer = [];
+    }
+  };
+
+  while (i < lines.length) {
+    const raw  = lines[i];
+    const line = raw.trim();
+
+    // ── Empty line ───────────────────────────────────────────────────────
+    if (line === '') {
+      flushPara();
+      // Collapse consecutive blank lines into one empty-line block
+      if (blocks.length > 0 && blocks[blocks.length - 1].type !== 'empty-line') {
+        blocks.push({ type: 'empty-line', content: '' });
+      }
+      i++;
+      continue;
+    }
+
+    // ── Separator ────────────────────────────────────────────────────────
+    if (isSeparator(line)) {
+      flushPara();
+      blocks.push({ type: 'separator', content: line });
+      i++; continue;
+    }
+
+    // ── Detect TITLE — only at the very start (before any paragraph) ─────
+    if (!titleFound && blocks.filter(b => b.type === 'paragraph').length === 0) {
+      const wc = line.split(/\s+/).length;
+      if (wc <= 12 && !line.endsWith('.') && line.length < 150) {
+        // Title: first non-blank line that is short and doesn't end with a sentence terminator
+        titleFound   = true;
+        detectedTitle = line;
+        blocks.push({ type: 'title', content: line });
+        i++; continue;
+      }
+    }
+
+    // ── Detect AUTHOR — line immediately after title ──────────────────────
+    // Accepts explicit prefixes (Oleh/By/Penulis/Nama/Author) OR a short
+    // name-like line (no sentence terminators, ≤6 words) that comes before
+    // any paragraph content.
+    if (titleFound && !authorFound && blocks.filter(b=>b.type==='paragraph').length === 0) {
+      const lc = line.toLowerCase();
+      const isExplicitAuthor =
+        lc.startsWith('oleh') || lc.startsWith('by ') || lc.startsWith('penulis') ||
+        lc.startsWith('nama') || lc.startsWith('author');
+      const wc = line.split(/\s+/).length;
+      // A name-like line: ≤ 6 words, does not end with sentence punctuation,
+      // does not look like a numbered/bullet item, and is not all-caps long (that is likely a heading).
+      const isNameLike =
+        wc >= 1 && wc <= 6 &&
+        !line.endsWith('.') && !line.endsWith('?') && !line.endsWith('!') &&
+        !isBullet(line) && !isNumbered(line);
+      if (isExplicitAuthor || isNameLike) {
+        authorFound   = true;
+        detectedAuthor = line;
+        blocks.push({ type: 'author', content: line });
+        i++; continue;
+      }
+    }
+
+    // ── Bullet list item ─────────────────────────────────────────────────
+    if (isBullet(line)) {
+      flushPara();
+      blocks.push({ type: 'bullet', content: line });
+      i++; continue;
+    }
+
+    // ── Numbered list item ───────────────────────────────────────────────
+    if (isNumbered(line)) {
+      flushPara();
+      blocks.push({ type: 'numbered', content: line });
+      i++; continue;
+    }
+
+    // ── Citation / reference ─────────────────────────────────────────────
+    if (isCitation(line)) {
+      flushPara();
+      blocks.push({ type: 'citation', content: line });
+      i++; continue;
+    }
+
+    // ── Block quotation ──────────────────────────────────────────────────
+    if (isQuotation(line)) {
+      flushPara();
+      blocks.push({ type: 'quotation', content: line });
+      i++; continue;
+    }
+
+    // ── Heading — short line preceded by (or followed by) an empty line ──
+    if (paraBuffer.length === 0 && isHeading(line) && i + 1 < lines.length && lines[i+1].trim() === '') {
+      blocks.push({ type: 'heading', content: line });
+      i++; continue;
+    }
+
+    // ── Regular paragraph text (may span multiple lines) ─────────────────
+    paraBuffer.push(line);
+    i++;
+  }
+
+  flushPara(); // flush any remaining buffer
+
+  return { title: detectedTitle, author: detectedAuthor, blocks };
+}
+
+/**
+ * Reconstruct a flat plain-text string from a parsed document.
+ * Suitable for clipboard copy and analysis engine input.
+ *
+ * @param {{ blocks: Array<{type,content}> }} doc
+ * @returns {string}
+ */
+function reconstructDocumentText(doc) {
+  if (!doc || !doc.blocks) return '';
+  return doc.blocks.map(b => {
+    if (b.type === 'empty-line') return '';
+    if (b.type === 'separator')  return '---';
+    return b.content;
+  }).join('\n');
+}
+
+/**
+ * Render typed document blocks as semantic HTML into a container element.
+ * Used for all .text-panel elements that show original or improved text.
+ *
+ * @param {Array<{type,content}>} blocks
+ * @param {HTMLElement} containerEl
+ */
+function renderDocumentBlocks(blocks, containerEl, plainText = false) {
+  if (!containerEl) return;
+
+  // Plain-text mode: just show pre-formatted text with line breaks
+  if (plainText) {
+    const flat = blocks ? blocks.map(b => {
+      if (b.type === 'empty-line') return '';
+      if (b.type === 'separator')  return '---';
+      return b.content;
+    }).join('\n') : '';
+    containerEl.innerHTML = `<pre class="doc-plaintext">${escapeHtml(flat)}</pre>`;
+    return;
+  }
+
+  if (!blocks || blocks.length === 0) { containerEl.innerHTML = ''; return; }
+
+  const parts = blocks.map(b => {
+    const text = escapeHtml(b.content);
+    switch (b.type) {
+      case 'title':
+        return `<p class="doc-block doc-title">${text}</p>`;
+      case 'author':
+        return `<p class="doc-block doc-author">${text}</p>`;
+      case 'heading':
+        return `<p class="doc-block doc-heading">${text}</p>`;
+      case 'paragraph':
+        return `<p class="doc-block doc-paragraph">${text}</p>`;
+      case 'quotation':
+        return `<blockquote class="doc-block doc-quotation">${text}</blockquote>`;
+      case 'bullet':
+        return `<p class="doc-block doc-bullet">${text}</p>`;
+      case 'numbered':
+        return `<p class="doc-block doc-numbered">${text}</p>`;
+      case 'citation':
+        return `<p class="doc-block doc-citation">${text}</p>`;
+      case 'separator':
+        return `<hr class="doc-separator" />`;
+      case 'empty-line':
+        return `<div class="doc-spacer"></div>`;
+      default:
+        return `<p class="doc-block doc-paragraph">${text}</p>`;
+    }
+  });
+
+  containerEl.innerHTML = parts.join('');
+}
+
+/**
+ * Render document into a panel, respecting the current _formatMode.
+ * Use this for ALL text panel renders instead of raw textContent assignment.
+ *
+ * @param {string|{blocks:Array}} docOrText — parsed document OR raw string
+ * @param {HTMLElement} containerEl
+ */
+function renderPanel(docOrText, containerEl) {
+  if (!containerEl) return;
+  const isPlain = (_formatMode === 'plaintext');
+
+  let doc;
+  if (typeof docOrText === 'string') {
+    doc = parseDocument(docOrText);
+  } else {
+    doc = docOrText;
+  }
+
+  if (!doc || !doc.blocks || doc.blocks.length === 0) {
+    containerEl.innerHTML = '';
+    return;
+  }
+
+  renderDocumentBlocks(doc.blocks, containerEl, isPlain);
+}
+
+/**
+ * Validate structural consistency between original and improved document.
+ * Returns a status object with a flag and optional message.
+ *
+ * @param {{ blocks: Array }} origDoc
+ * @param {{ blocks: Array }} impDoc
+ * @returns {{ ok: boolean, message: string }}
+ */
+function validateDocumentStructure(origDoc, impDoc) {
+  if (!origDoc || !impDoc) return { ok: false, message: 'Dokumen tidak valid.' };
+
+  const countType = (doc, type) => doc.blocks.filter(b => b.type === type).length;
+
+  const origParas  = countType(origDoc,  'paragraph');
+  const impParas   = countType(impDoc,   'paragraph');
+  const origTitle  = countType(origDoc,  'title');
+  const impTitle   = countType(impDoc,   'title');
+  const origAuthor = countType(origDoc,  'author');
+  const impAuthor  = countType(impDoc,   'author');
+
+  if (origTitle !== impTitle || origAuthor !== impAuthor) {
+    return { ok: false, message: 'Beberapa bagian struktur perlu ditinjau.' };
+  }
+  if (Math.abs(origParas - impParas) > 2) {
+    return { ok: false, message: 'Beberapa bagian struktur perlu ditinjau.' };
+  }
+  return { ok: true, message: 'Struktur dokumen dipertahankan dari teks asli.' };
+}
+
+/**
+ * Normalize a history record that may be from an older version without document structure.
+ * Returns a document object from flat originalText if no parsed doc is stored.
+ *
+ * @param {object} record — history record
+ * @returns {{ title, author, blocks }}
+ */
+function normalizeHistoricalAnalysis(record) {
+  if (record.originalDocument) return record.originalDocument;
+  // Fallback: parse from flat originalText
+  if (record.originalText) return parseDocument(record.originalText);
+  return { title: null, author: null, blocks: [] };
+}
+
+/* ============================================================
    FEATURE EXTRACTION
    Each function returns a normalised value 0–100 (higher = more AI-like)
    unless noted. Raw values are also returned where useful.
@@ -899,6 +1207,9 @@ function saveAnalysisToHistory(analysis, improvedData = null) {
   const label   = analysis.text.slice(0, 80).trim().replace(/\s+/g, ' ') + (analysis.text.length > 80 ? '…' : '');
   const num     = history.length + 1;
 
+  // Parse + store document structure for backward compatibility
+  const originalDocument = parseDocument(analysis.text);
+
   const record = {
     id:           analysis.timestamp,
     num,
@@ -907,6 +1218,7 @@ function saveAnalysisToHistory(analysis, improvedData = null) {
     time:         new Date(analysis.timestamp).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
     // Original metrics (stored verbatim — never recalculated)
     originalText:     analysis.text,
+    originalDocument, // ← structured document (new)
     wordCount:        analysis.wordCount,
     sentenceCount:    analysis.sentenceCount,
     paragraphCount:   analysis.paragraphs.length,
@@ -964,6 +1276,29 @@ function updateHistoryWithImprovement(id, improvedData) {
     burstScore:       improvedData.improvedAnalysis.features.burstiness.score,
   };
   history[idx].changeMade = improvedData.changeMade;
+  // Store all 3 candidates for full inspection from history detail view
+  if (improvedData.allCandidates) {
+    history[idx].allCandidates       = improvedData.allCandidates.map(c => ({
+      candNum:      c.candNum,
+      rankNum:      c.rankNum,
+      qualityIndex: c.qualityIndex,
+      qualityLabel: c.qualityLabel,
+      strategy:     c.strategy,
+      text:         c.text,
+      finalScore:   c.analysis.finalScore,
+      validation:   c.validation,
+      // Store just the key feature scores — not the full analysis object (too large for localStorage)
+      featureSnapshot: {
+        lexRepScore:      Math.round(c.analysis.features.lexicalRepetition.score),
+        phraseRepScore:   Math.round(c.analysis.features.phraseRepetition.score),
+        sentUniformity:   Math.round(c.analysis.features.sentenceUniformity.score),
+        burstScore:       Math.round(c.analysis.features.burstiness.score),
+        vocabTTR:         Math.round(c.analysis.features.vocabularyDiversity.ttr * 100),
+      },
+    }));
+    history[idx].chosenCandidateIdx = improvedData.chosenCandidateIdx ?? 0;
+    history[idx].failsafeState      = improvedData.failsafeState ?? null;
+  }
   persistHistory(history);
 }
 
@@ -1615,115 +1950,236 @@ function renderRekomendasi(analysis) {
 }
 
 /* ============================================================
-   MODULE: WRITING IMPROVEMENT ENGINE v3
+   MODULE: WRITING IMPROVEMENT ENGINE v4
    ============================================================
 
-   Architecture: Analyze → Revise → Re-analyze → Validate → Accept/Reject
-   Principle: Minimum necessary intervention — only fix what is measurably broken.
+   Architecture: DIAGNOSE → TARGET → REVISE → RECHECK → ACCEPT/REJECT
+   Philosophy:   Minimum necessary intervention. Preserve author voice.
+                 Write quality is the primary objective — not detector scores.
 
-   Key fixes vs v2:
-   - Transitions are NEVER injected. They create new bigrams that raise phraseRepetition.
-     Word count also expands, changing sentence-length distribution unpredictably.
-   - Synonym substitution replaces only words with freq > THRESHOLD, and only a fraction
-     of occurrences, never creating a new uniform replacement pattern.
-   - Sentence splitting only happens when a sentence is genuinely too long (>32 words)
-     AND sentences are documented to be too long across the whole text.
-   - No sentence combining — always raises uniformity.
-   - validateImprovement() enforces a minimum-improvement gate before accepting any candidate.
-   - selectBestRevision() picks the candidate with the best validated score.
-   - Up to 3 candidates are generated with different strategy parameters.
-   - If no candidate passes validation, the original text is returned unchanged.
+   Key principles:
+   - Every sentence is individually classified (KEEP/REVISE_LIGHT/MODERATE/STRONG)
+   - Revisions only applied where a measurable problem exists
+   - 3 candidates use genuinely different strategies (not just threshold variation)
+   - Semantic preservation is checked: key nouns, numbers, names are never changed
+   - Natural Writing Quality Score is holistic: not just AI risk delta
+   - Transition words are REMOVED when overused, never injected
+   - Sentence combining is allowed only when two very short sentences are clearly related
+   - Opening variation uses clause reordering, not just word stripping
 
    API integration point (future):
-   Replace generateOneCandidate() body with an async API call to a language model.
-   The surrounding validation/selection loop is API-agnostic.
-   DO NOT expose API keys in frontend code — all API keys must be handled server-side.
+   Replace applySentenceRevision() with a language model call.
+   The classify → validate → rank loop is API-agnostic.
    ============================================================ */
 
+/* ──────────────────────────────────────────────────────────────────
+   CONSTANTS
+   ────────────────────────────────────────────────────────────────── */
+
 /**
- * Synonym map.
- * Words are grouped by meaning similarity.
- * Only words that are genuinely interchangeable in academic context are included.
- * Important academic terminology (e.g. "penelitian", "analisis") is intentionally
- * kept with limited synonyms to avoid distorting meaning.
+ * Synonym map — ONLY non-technical, high-frequency generic words.
+ * Synonyms are verified to be contextually interchangeable in academic prose.
+ * Academic terminology (penelitian, analisis, teori, metode…) intentionally absent.
  */
 const SYNONYM_MAP = {
-  // Indonesian — high-frequency generic verbs
-  'menunjukkan':  ['mengindikasikan','memperlihatkan','mencerminkan'],
-  'merupakan':    ['adalah','menjadi'],
-  'terdapat':     ['ditemukan','dijumpai'],
-  'dilakukan':    ['dijalankan','dilaksanakan'],
-  'diperoleh':    ['didapatkan','dihasilkan'],
-  'dapat':        ['mampu','bisa'],
-  'sangat':       ['amat','cukup'],
-  'banyak':       ['sejumlah','berbagai'],
-  'menggunakan':  ['memanfaatkan','menerapkan'],
-  'memberikan':   ['menyediakan','menawarkan'],
-  'penting':      ['signifikan','esensial'],
-  'proses':       ['prosedur','mekanisme'],
-  'faktor':       ['aspek','elemen'],
-  'kegiatan':     ['aktivitas','upaya'],
-  'masalah':      ['persoalan','tantangan'],
-  'tujuan':       ['sasaran','maksud'],
-  'kualitas':     ['mutu','standar'],
-  'melalui':      ['lewat'],
-  // English — high-frequency generic verbs
-  'shows':    ['indicates','demonstrates'],
-  'uses':     ['employs','applies'],
-  'provides': ['offers','supplies'],
-  'found':    ['identified','detected'],
-  'many':     ['numerous','several'],
-  'also':     ['additionally','moreover'],
-  'however':  ['nevertheless','yet'],
-  'therefore':['consequently','thus'],
-  'because':  ['since','given that'],
+  // Indonesian generic verbs & adjectives
+  'menunjukkan':   ['mengindikasikan','memperlihatkan','mencerminkan'],
+  'merupakan':     ['adalah','menjadi'],
+  'terdapat':      ['ditemukan','dijumpai'],
+  'dilakukan':     ['dijalankan','dilaksanakan'],
+  'diperoleh':     ['didapatkan','dihasilkan'],
+  'dapat':         ['mampu','bisa'],
+  'sangat':        ['amat'],
+  'banyak':        ['sejumlah','berbagai'],
+  'menggunakan':   ['memanfaatkan','menerapkan'],
+  'memberikan':    ['menyediakan','menawarkan'],
+  'penting':       ['signifikan','esensial'],
+  'proses':        ['prosedur','mekanisme'],
+  'faktor':        ['aspek','elemen'],
+  'kegiatan':      ['aktivitas','upaya'],
+  'masalah':       ['persoalan','tantangan'],
+  'tujuan':        ['sasaran','maksud'],
+  'kualitas':      ['mutu','standar'],
+  'melalui':       ['lewat'],
+  'mempengaruhi':  ['berdampak pada','memengaruhi'],
+  'berkaitan':     ['berhubungan','terkait'],
+  'menjelaskan':   ['memaparkan','menguraikan'],
+  'berbagai':      ['beragam','sejumlah'],
+  'seperti':       ['antara lain','misalnya'],
+  // English generic verbs & adjectives
+  'shows':     ['indicates','demonstrates'],
+  'uses':      ['employs','applies'],
+  'provides':  ['offers','supplies'],
+  'found':     ['identified','detected'],
+  'important': ['significant','essential'],
+  'many':      ['numerous','several'],
+  'also':      ['additionally'],
+  'however':   ['nevertheless','yet'],
+  'therefore': ['consequently','thus'],
+  'because':   ['since','given that'],
+  'suggests':  ['implies','indicates'],
+  'allows':    ['enables','permits'],
+  'creates':   ['produces','generates'],
 };
 
 /**
- * Detect whether a sentence already starts with a known transition marker.
- * Used to avoid double-transition injection.
+ * Overused transition patterns to detect and potentially remove.
+ * These are classified as filler when they appear too frequently.
+ */
+const TRANSITION_PATTERNS = [
+  // Indonesian
+  { re: /^hal ini\b/i,           label: 'hal ini' },
+  { re: /^oleh karena itu[,\s]/i,label: 'oleh karena itu' },
+  { re: /^dengan demikian[,\s]/i,label: 'dengan demikian' },
+  { re: /^selain itu[,\s]/i,     label: 'selain itu' },
+  { re: /^selanjutnya[,\s]/i,    label: 'selanjutnya' },
+  { re: /^pada akhirnya[,\s]/i,  label: 'pada akhirnya' },
+  { re: /^di sisi lain[,\s]/i,   label: 'di sisi lain' },
+  { re: /^lebih lanjut[,\s]/i,   label: 'lebih lanjut' },
+  { re: /^sebagai tambahan[,\s]/i,label: 'sebagai tambahan' },
+  { re: /^dalam hal ini[,\s]/i,  label: 'dalam hal ini' },
+  { re: /^perlu dicatat[,\s]/i,  label: 'perlu dicatat' },
+  // English
+  { re: /^furthermore[,\s]/i,    label: 'furthermore' },
+  { re: /^additionally[,\s]/i,   label: 'additionally' },
+  { re: /^moreover[,\s]/i,       label: 'moreover' },
+  { re: /^however[,\s]/i,        label: 'however' },
+  { re: /^therefore[,\s]/i,      label: 'therefore' },
+  { re: /^in addition[,\s]/i,    label: 'in addition' },
+  { re: /^as a result[,\s]/i,    label: 'as a result' },
+  { re: /^it is important[,\s]/i,label: 'it is important' },
+];
+
+/* ──────────────────────────────────────────────────────────────────
+   SENTENCE DIAGNOSIS SYSTEM
+   ────────────────────────────────────────────────────────────────── */
+
+/**
+ * Classify each sentence into a revision urgency tier.
+ *
+ * KEEP           — sentence is already strong; do not touch it
+ * REVISE_LIGHT   — one minor issue (opening repetition OR one overused word)
+ * REVISE_MODERATE— two issues or a structural pattern problem
+ * REVISE_STRONG  — multiple problems; sentence genuinely needs work
+ *
+ * @returns {Array<{idx, sentence, tier, issues: string[]}>}
+ */
+function classifySentences(sentences, wordFreq) {
+  const n          = sentences.length;
+  const lengths    = sentences.map(s => s.split(/\s+/).filter(w=>w).length);
+  const mean       = n > 0 ? lengths.reduce((a,b)=>a+b,0)/n : 0;
+  const totalWords = Object.values(wordFreq).reduce((a,b)=>a+b,0);
+
+  // Build opening-word frequency map (ignoring stop words)
+  const openingFreq = {};
+  sentences.forEach(s => {
+    const fw = s.trim().split(/\s+/)[0]?.toLowerCase() || '';
+    if (fw && !STOP_WORDS.has(fw)) openingFreq[fw] = (openingFreq[fw]||0) + 1;
+  });
+
+  // Detect transition openings per sentence
+  const transitionCounts = {};
+  sentences.forEach(s => {
+    const s_lc = s.toLowerCase().trim();
+    TRANSITION_PATTERNS.forEach(tp => {
+      if (tp.re.test(s_lc)) transitionCounts[tp.label] = (transitionCounts[tp.label]||0) + 1;
+    });
+  });
+
+  return sentences.map((sentence, idx) => {
+    const issues = [];
+    const wc     = lengths[idx];
+    const s_lc   = sentence.toLowerCase().trim();
+
+    // Issue 1: sentence length far from mean (either very long or very short relative to context)
+    if (wc > 35) issues.push('too_long');
+    if (wc < 5 && n > 3) issues.push('too_short');
+
+    // Issue 2: word length close to too many neighbors (uniformity contribution)
+    // Check if ±2 neighbors have within ±20% word count — indicates local uniformity cluster
+    const neighbors = [idx-2, idx-1, idx+1, idx+2].filter(i=>i>=0&&i<n);
+    const similarNeighbors = neighbors.filter(i => Math.abs(lengths[i] - wc) / Math.max(1, wc) < 0.2);
+    if (similarNeighbors.length >= 3) issues.push('uniform_cluster');
+
+    // Issue 3: repeated opening word (used ≥3 times globally)
+    const fw = sentence.trim().split(/\s+/)[0]?.toLowerCase() || '';
+    if (fw && !STOP_WORDS.has(fw) && (openingFreq[fw]||0) >= 3) issues.push('repeated_opening');
+
+    // Issue 4: contains overused non-technical words
+    const wordTokens = s_lc.match(/[a-zà-ÿ]{4,}/g) || [];
+    const hasOverusedWord = wordTokens.some(w => {
+      if (!SYNONYM_MAP[w]) return false;
+      const rate = (wordFreq[w]||0) / Math.max(1, totalWords) * 100;
+      return rate >= 2.0 && (wordFreq[w]||0) >= 3;
+    });
+    if (hasOverusedWord) issues.push('overused_word');
+
+    // Issue 5: opens with a filler transition that is overused globally
+    const matchedTransition = TRANSITION_PATTERNS.find(tp => tp.re.test(s_lc));
+    if (matchedTransition && (transitionCounts[matchedTransition.label]||0) >= 2) {
+      issues.push('overused_transition');
+    }
+
+    // Issue 6: redundant phrase — sentence contains a bigram that is over-repeated
+    // (piggyback on word freq: detect two consecutive content words both overused)
+    const tokens4plus = wordTokens.filter(w => w.length >= 4 && !STOP_WORDS.has(w));
+    const redundantBigram = tokens4plus.some((w, i) => {
+      if (i === 0) return false;
+      const w2 = tokens4plus[i-1];
+      const r1 = (wordFreq[w]||0) / Math.max(1, totalWords) * 100;
+      const r2 = (wordFreq[w2]||0) / Math.max(1, totalWords) * 100;
+      return r1 >= 2.0 && r2 >= 2.0;
+    });
+    if (redundantBigram) issues.push('redundant_phrase');
+
+    // Tier assignment
+    let tier;
+    if (issues.length === 0) {
+      tier = 'KEEP';
+    } else if (issues.length === 1) {
+      tier = 'REVISE_LIGHT';
+    } else if (issues.length <= 3) {
+      tier = 'REVISE_MODERATE';
+    } else {
+      tier = 'REVISE_STRONG';
+    }
+
+    return { idx, sentence, tier, issues, wc };
+  });
+}
+
+/**
+ * Check whether a sentence already starts with a known transition marker.
  */
 function hasLeadingTransition(sentence) {
   const s = sentence.toLowerCase().trim();
-  const markers = ['selain','dengan demikian','oleh karena','berkaitan','lebih lanjut',
-    'dalam konteks','sehubungan','sebagaimana','perlu dicatat','furthermore',
-    'additionally','moreover','however','therefore','singkatnya','intinya',
-    'terkait','selaras','sebagai tambahan','di samping','secara lebih'];
-  return markers.some(m => s.startsWith(m));
+  return TRANSITION_PATTERNS.some(tp => tp.re.test(s));
 }
 
 /**
  * Detect measurable writing problems in a text.
- * Returns a structured report — not just a Set of codes.
- *
- * Each problem has:
- *   - code: identifier
- *   - severity: 0–1 (proportion of affected sentences)
- *   - detail: human-readable description
- *   - affectedIndices: which sentence indices are affected (for targeted editing)
+ * Returns a structured report for UI display and candidate generation.
+ * Kept for backwards compatibility with the analysis pipeline.
  */
 function analyzeWritingPatterns(sentences, wordFreq) {
-  const lengths = sentences.map(s => s.split(/\s+/).filter(w => w).length);
-  const mean = lengths.length > 0 ? lengths.reduce((a, b) => a + b, 0) / lengths.length : 0;
-  const variance = lengths.length > 0 ? lengths.reduce((s, l) => s + (l - mean) ** 2, 0) / lengths.length : 0;
-  const cv = mean > 0 ? Math.sqrt(variance) / mean : 0;
+  const lengths  = sentences.map(s => s.split(/\s+/).filter(w=>w).length);
+  const mean     = lengths.length > 0 ? lengths.reduce((a,b)=>a+b,0)/lengths.length : 0;
+  const variance = lengths.length > 0 ? lengths.reduce((s,l)=>s+(l-mean)**2,0)/lengths.length : 0;
+  const cv       = mean > 0 ? Math.sqrt(variance)/mean : 0;
+  const totalWords = Object.values(wordFreq).reduce((a,b)=>a+b,0);
 
   const problems = [];
 
-  // ── Problem A: Sentence-length uniformity ────────────────
-  // Healthy academic text has cv roughly 0.35–0.65.
-  // Below 0.25 = dangerously uniform.
   if (cv < 0.30) {
     problems.push({
       code: 'uniform_length',
       severity: Math.max(0, (0.30 - cv) / 0.30),
-      detail: `Koefisien variasi panjang kalimat sangat rendah (${(cv * 100).toFixed(1)}%).`,
-      affectedIndices: [], // not sentence-specific — text-level problem
+      detail: `Koefisien variasi panjang kalimat sangat rendah (${(cv*100).toFixed(1)}%).`,
+      affectedIndices: [],
     });
   }
 
-  // ── Problem B: Repeated sentence openings ────────────────
-  // Flag opening (first word) that appears 3+ times.
+  // Repeated openings (≥3 identical first-word)
   const firstWords = {};
   sentences.forEach((s, i) => {
     const fw = s.trim().split(/\s+/)[0]?.toLowerCase() || '';
@@ -1743,37 +2199,57 @@ function analyzeWritingPatterns(sentences, wordFreq) {
     }
   });
 
-  // ── Problem C: Lexical repetition above threshold ────────
-  // Only flag words that are genuinely over-repeated (not technical terms).
-  const totalWords = Object.values(wordFreq).reduce((a, b) => a + b, 0);
-  Object.entries(wordFreq).forEach(([word, count]) => {
-    if (STOP_WORDS.has(word) || word.length <= 3) return;
-    if (!SYNONYM_MAP[word]) return; // only target words we can actually substitute
-    const rate = count / totalWords * 100;
-    if (rate >= 2.5 && count >= 4) { // appears ≥4 times AND ≥2.5% of text
-      const affectedIndices = sentences.reduce((acc, s, i) => {
-        if (s.toLowerCase().includes(word)) acc.push(i);
-        return acc;
-      }, []);
+  // Overused transition expressions
+  const transCounts = {};
+  sentences.forEach((s, i) => {
+    const s_lc = s.toLowerCase().trim();
+    TRANSITION_PATTERNS.forEach(tp => {
+      if (tp.re.test(s_lc)) {
+        if (!transCounts[tp.label]) transCounts[tp.label] = { count: 0, indices: [] };
+        transCounts[tp.label].count++;
+        transCounts[tp.label].indices.push(i);
+      }
+    });
+  });
+  Object.entries(transCounts).forEach(([label, {count, indices}]) => {
+    if (count >= 2) {
       problems.push({
-        code: 'repeated_word',
-        severity: Math.min(1, (rate - 2.5) / 5),
-        detail: `Kata "${word}" muncul ${count} kali (${rate.toFixed(1)}% dari teks).`,
-        affectedIndices,
-        word,
+        code: 'overused_transition',
+        severity: count / sentences.length,
+        detail: `Transisi "${label}" muncul ${count} kali.`,
+        affectedIndices: indices,
+        word: label,
         count,
       });
     }
   });
 
-  // ── Problem D: Very long sentences ──────────────────────
-  // Only flag sentences genuinely too long for readability (>32 words).
-  const longIndices = lengths.reduce((acc, l, i) => { if (l > 32) acc.push(i); return acc; }, []);
-  if (longIndices.length > 0 && longIndices.length / sentences.length > 0.25) {
+  // Overused non-technical words
+  Object.entries(wordFreq).forEach(([word, count]) => {
+    if (STOP_WORDS.has(word) || word.length <= 3) return;
+    if (!SYNONYM_MAP[word]) return;
+    const rate = count / totalWords * 100;
+    if (rate >= 2.5 && count >= 4) {
+      const affectedIndices = sentences.reduce((acc,s,i) => {
+        if (s.toLowerCase().includes(word)) acc.push(i);
+        return acc;
+      }, []);
+      problems.push({
+        code: 'repeated_word',
+        severity: Math.min(1, (rate-2.5)/5),
+        detail: `Kata "${word}" muncul ${count} kali (${rate.toFixed(1)}% dari teks).`,
+        affectedIndices, word, count,
+      });
+    }
+  });
+
+  // Very long sentences (>35 words)
+  const longIndices = lengths.reduce((acc,l,i) => { if (l>35) acc.push(i); return acc; }, []);
+  if (longIndices.length > 0 && longIndices.length/sentences.length > 0.20) {
     problems.push({
       code: 'too_long',
-      severity: longIndices.length / sentences.length,
-      detail: `${longIndices.length} kalimat memiliki lebih dari 32 kata.`,
+      severity: longIndices.length/sentences.length,
+      detail: `${longIndices.length} kalimat memiliki lebih dari 35 kata.`,
       affectedIndices: longIndices,
     });
   }
@@ -1781,26 +2257,29 @@ function analyzeWritingPatterns(sentences, wordFreq) {
   return { cv, mean, problems };
 }
 
+/* ──────────────────────────────────────────────────────────────────
+   REVISION STRATEGIES (A–J)
+   Each is a pure function: sentence → revised sentence (or null if no change).
+   ────────────────────────────────────────────────────────────────── */
+
 /**
- * Split a long sentence into two at a natural break point.
- * Only splits if a genuine syntactic boundary is found.
- * Returns array of 1 sentence (original) or 2 sentences (split).
+ * Strategy B — Split a genuinely long sentence at a natural syntactic boundary.
+ * Returns [sentence] (unchanged) or [part1, part2].
  */
-function splitLongSentence(sentence) {
+function strategySplitSentence(sentence) {
   const words = sentence.split(/\s+/);
-  if (words.length <= 30) return [sentence];
+  if (words.length <= 28) return [sentence];
 
-  const midStart = Math.floor(words.length * 0.40);
-  const midEnd   = Math.floor(words.length * 0.65);
+  const midStart = Math.floor(words.length * 0.38);
+  const midEnd   = Math.floor(words.length * 0.68);
 
-  // Preferred split markers (conjunctions that begin a new clause)
-  const clauseMarkers = /^(namun|tetapi|sedangkan|sehingga|karena|walaupun|meskipun|dan|but|however|although|therefore|because|while|whereas|so)$/i;
+  const clauseMarkers = /^(namun|tetapi|sedangkan|sehingga|karena|walaupun|meskipun|dan|but|however|although|therefore|because|while|whereas|so|yang|bahwa|agar|supaya)$/i;
 
   for (let i = midStart; i <= midEnd; i++) {
-    if (clauseMarkers.test(words[i])) {
+    const word = words[i].replace(/[,;]$/, '').toLowerCase();
+    if (clauseMarkers.test(word)) {
       const first  = words.slice(0, i).join(' ').replace(/[,;]+$/, '').trim();
       const second = words.slice(i + 1).join(' ').trim();
-      // Both halves must be at least 7 words to be meaningful
       if (first.split(/\s+/).length >= 7 && second.split(/\s+/).length >= 7) {
         const f = first.endsWith('.') ? first : first + '.';
         const s = second.charAt(0).toUpperCase() + second.slice(1);
@@ -1809,222 +2288,493 @@ function splitLongSentence(sentence) {
     }
   }
 
-  // Secondary: split at a comma mid-sentence if no conjunction found
+  // Try splitting at a mid-sentence comma
   for (let i = midStart; i <= midEnd; i++) {
     if (words[i].endsWith(',')) {
-      const first  = words.slice(0, i + 1).join(' ').trim();
-      const second = words.slice(i + 1).join(' ').trim();
-      if (second && first.split(/\s+/).length >= 7 && second.split(/\s+/).length >= 7) {
-        const f = first.endsWith('.') ? first : first + '.';
+      const first  = words.slice(0, i+1).join(' ').trim();
+      const second = words.slice(i+1).join(' ').trim();
+      if (first.split(/\s+/).length >= 7 && second.split(/\s+/).length >= 7) {
+        const f = first.replace(/,$/, '.').trim();
         const s = second.charAt(0).toUpperCase() + second.slice(1);
         return [f, s.endsWith('.') ? s : s + '.'];
       }
     }
   }
-
-  return [sentence]; // cannot safely split without distorting meaning
+  return [sentence];
 }
 
 /**
- * Substitute repeated words in a sentence with synonyms.
- * Only replaces a word if:
- *   - it appears in SYNONYM_MAP
- *   - its global occurrence count exceeds minCount
- *   - we haven't replaced it in a recent sentence (tracked via usedAtSentence)
- *
- * This prevents creating a NEW uniform pattern of repeated synonyms.
- *
- * @param {string}  sentence
- * @param {object}  wordFreq         — global frequency map
- * @param {object}  lastReplacedAt   — mutable: word → last sentence index where it was replaced
- * @param {number}  sentIdx          — current sentence index
- * @param {number}  minGlobalCount   — only replace if freq >= this
- * @param {number}  minGapSentences  — must wait this many sentences before replacing same word again
+ * Strategy C — Combine two short adjacent sentences.
+ * Only applies when both are < 8 words, to avoid raising sentence-length uniformity.
+ * Returns the combined string, or null if not appropriate.
  */
-function substituteRepeatedWords(sentence, wordFreq, lastReplacedAt, sentIdx, minGlobalCount, minGapSentences) {
-  // Per-sentence global synonym counter to pick from SYNONYM_MAP in order
-  const tokens     = sentence.split(/(\s+|(?=[.,;:!?()—–"'])|(?<=[.,;:!?()—–"']))/);
-  let changeCount  = 0;
-  const maxPerSent = 2; // never replace more than 2 words per sentence
+function strategyCombineSentences(s1, s2) {
+  const w1 = s1.trim().split(/\s+/).length;
+  const w2 = s2.trim().split(/\s+/).length;
+  if (w1 > 8 || w2 > 8) return null;          // only combine genuinely short pairs
+  if (w1 + w2 > 20) return null;               // combined must still be readable
+  const base = s1.trim().replace(/[.!?]+$/, '');
+  // Use a contextually neutral connector
+  return base + ', sehingga ' + s2.trim().charAt(0).toLowerCase() + s2.trim().slice(1);
+}
+
+/**
+ * Strategy D — Remove redundant occurrences.
+ * Given the sentence and a set of overused words, reduce one occurrence per sentence
+ * by substituting with a synonym (gap-checked).
+ */
+function strategyReduceRedundancy(sentence, wordFreq, lastReplacedAt, sentIdx, minFreq, minGap) {
+  const tokens = sentence.split(/(\s+|(?=[.,;:!?()—–"'])|(?<=[.,;:!?()—–"']))/);
+  let changeCount = 0;
+  const maxPerSent = 2;
 
   const result = tokens.map(token => {
     if (changeCount >= maxPerSent) return token;
     const lower = token.toLowerCase();
-    // Skip punctuation, whitespace, stop words, short words
     if (!lower.match(/^[a-zà-ÿ]{4,}$/) || STOP_WORDS.has(lower)) return token;
     const syns = SYNONYM_MAP[lower];
     if (!syns || syns.length === 0) return token;
     const freq = wordFreq[lower] || 0;
-    if (freq < minGlobalCount) return token;
+    if (freq < minFreq) return token;
 
-    // Gap check: don't replace the same word in adjacent sentences
     const lastIdx = lastReplacedAt[lower] ?? -999;
-    if (sentIdx - lastIdx < minGapSentences) return token;
+    if (sentIdx - lastIdx < minGap) return token;
 
-    // Pick synonym by cycling: each word rotates independently
     const useCount = (lastReplacedAt['__' + lower + '_count'] || 0);
     const syn = syns[useCount % syns.length];
-    lastReplacedAt[lower] = sentIdx;
+    lastReplacedAt[lower]  = sentIdx;
     lastReplacedAt['__' + lower + '_count'] = useCount + 1;
-
     changeCount++;
-    const isCapitalized = token[0] === token[0].toUpperCase() && token[0].match(/[A-ZÀ-Ÿ]/);
-    return isCapitalized ? syn.charAt(0).toUpperCase() + syn.slice(1) : syn;
-  });
 
+    const isCap = token[0] === token[0].toUpperCase() && token[0].match(/[A-ZÀ-Ÿ]/);
+    return isCap ? syn.charAt(0).toUpperCase() + syn.slice(1) : syn;
+  });
   return result.join('');
 }
 
 /**
- * Generate one candidate revision.
- *
- * Accepts a strategy object to control which operations are applied
- * and at what threshold — this allows generating multiple diverse candidates.
- *
- * Strategy parameters:
- *   - synonymMinFreq: minimum global word frequency before substitution
- *   - synonymGap: min sentence gap between substituting the same word
- *   - splitThreshold: sentence word-count at which to attempt splitting
- *   - openingVariationMode: 'none' | 'rotate' — whether to vary repeated openings
- *
- * This function NEVER:
- *   - injects filler transitions
- *   - combines sentences
- *   - adds words not in the original
- *   - expands paragraphs
+ * Strategy E — Change sentence opening.
+ * Attempts to restructure the sentence so it begins differently.
+ * Operates only on occurrences 2, 3, 4+ of a repeated opener.
+ * Does NOT merely strip the first word — tries to invert clause order.
  */
-function generateOneCandidate(text, analysis, strategy) {
-  const sentences = getSentences(text);
-  const { problems } = analysis;
-  const wordFreq = {};
-  getWords(text).forEach(w => { wordFreq[w] = (wordFreq[w] || 0) + 1; });
+function strategyChangeOpening(sentence, occurrenceNum) {
+  if (occurrenceNum < 1) return sentence; // keep first occurrence unchanged
+  const s = sentence.trim();
+  const words = s.split(/\s+/);
+  if (words.length < 6) return sentence;
 
-  const lastReplacedAt = {}; // tracks synonym replacement position per word
-  const changeLog = {
-    synonymsReplaced:  0,
-    sentencesSplit:    0,
-    openingsVaried:    0,
-  };
-
-  // Determine which problems are active
-  const hasUniformLength   = problems.some(p => p.code === 'uniform_length');
-  const repeatedWords      = problems.filter(p => p.code === 'repeated_word');
-  const tooLongProblem     = problems.find(p => p.code === 'too_long');
-  const repeatedOpenings   = problems.filter(p => p.code === 'repeated_opening');
-
-  // Build per-sentence problem index for targeted editing
-  const sentenceProblems = {}; // sentIdx → Set of problem codes
-  problems.forEach(prob => {
-    (prob.affectedIndices || []).forEach(i => {
-      if (!sentenceProblems[i]) sentenceProblems[i] = new Set();
-      sentenceProblems[i].add(prob.code);
-    });
-  });
-
-  // Opening variation: for each repeated opening word, prepare a rotation list
-  // We rotate the opening pattern across its occurrences
-  const openingRotations = {}; // word → array of seen indices, for rotation tracking
-  if (strategy.openingVariationMode === 'rotate' && repeatedOpenings.length > 0) {
-    repeatedOpenings.forEach(prob => {
-      openingRotations[prob.word] = { indices: prob.affectedIndices, cursor: 0 };
-    });
+  // Look for a comma-separated clause we can move to front
+  const commaIdx = words.findIndex((w, i) => i >= 3 && i <= words.length - 4 && w.endsWith(','));
+  if (commaIdx > 0) {
+    const back   = words.slice(0, commaIdx + 1).join(' ');
+    const front  = words.slice(commaIdx + 1).join(' ');
+    if (front.split(/\s+/).length >= 4 && back.split(/\s+/).length >= 3) {
+      // "X, Y" → "Y X"
+      const newFront = front.trim().replace(/[.!?]+$/, '');
+      const newBack  = back.trim().replace(/,$/, '');
+      const combined = newFront.charAt(0).toUpperCase() + newFront.slice(1) + ', ' + newBack.charAt(0).toLowerCase() + newBack.slice(1);
+      if (!combined.endsWith('.')) return combined + '.';
+      return combined;
+    }
   }
 
-  const newSentences = sentences.map((sentence, idx) => {
-    const probs = sentenceProblems[idx] || new Set();
-    let s = sentence;
-    let modified = false;
-
-    // ── A. Split genuinely long sentences ───────────────────
-    if (tooLongProblem && probs.has('too_long')) {
-      const wCount = s.split(/\s+/).filter(w => w).length;
-      if (wCount > strategy.splitThreshold) {
-        const parts = splitLongSentence(s);
-        if (parts.length > 1) {
-          changeLog.sentencesSplit++;
-          // Return both parts joined by newline marker; we'll flatten at the end
-          return '\x00SPLIT\x00' + parts.join('\x00SEP\x00');
-        }
+  // Fallback: remove only a known filler opener and capitalise the remainder
+  const lc = s.toLowerCase();
+  const fillerPhrases = [
+    'hal ini menunjukkan bahwa ', 'hal ini mengindikasikan bahwa ', 'hal ini memperlihatkan bahwa ',
+    'hal ini adalah ', 'hal ini merupakan ',
+  ];
+  for (const fp of fillerPhrases) {
+    if (lc.startsWith(fp)) {
+      const rest = s.slice(fp.length);
+      if (rest.split(/\s+/).length >= 4) {
+        return rest.charAt(0).toUpperCase() + rest.slice(1);
       }
     }
+  }
 
-    // ── B. Reduce lexical repetition ────────────────────────
-    if (repeatedWords.length > 0 && (probs.has('repeated_word') || repeatedWords.some(p => p.affectedIndices.includes(idx)))) {
-      const revised = substituteRepeatedWords(
-        s, wordFreq, lastReplacedAt, idx,
-        strategy.synonymMinFreq, strategy.synonymGap
-      );
-      if (revised !== s) {
-        s = revised;
-        modified = true;
-        changeLog.synonymsReplaced++;
-      }
-    }
+  // Fallback 2: drop the first repeated-opener word if rest is meaningful
+  const rest = s.replace(/^\S+\s+/, '');
+  const restWords = rest.split(/\s+/).filter(w=>w);
+  if (restWords.length >= 5) {
+    return rest.charAt(0).toUpperCase() + rest.slice(1);
+  }
 
-    // ── C. Vary repeated sentence openings ──────────────────
-    // Only alter the 2nd, 3rd, 4th+ occurrence of a repeated opener.
-    // The first occurrence keeps the original opening.
-    if (strategy.openingVariationMode === 'rotate') {
-      const firstWord = s.trim().split(/\s+/)[0]?.toLowerCase() || '';
-      const rot = openingRotations[firstWord];
-      if (rot) {
-        const occurrenceNum = rot.indices.indexOf(idx); // 0-based position in repetition list
-        if (occurrenceNum >= 1) {
-          // Rearrange: move the subject/verb pair or prepend a short phrase
-          // Strategy: for the Nth repeat (N>=1), try omitting the redundant opening word
-          // and restructuring if the sentence allows it.
-          // We do this by checking if removing the first word still yields a grammatical sentence.
-          // We only do this if the first word is not a necessary subject.
-          const rest = s.trim().replace(/^\S+\s*/, '');
-          const restWords = rest.split(/\s+/).filter(w => w);
-          if (restWords.length >= 5) {
-            // Check the next word isn't also a repeated opener (avoid double-removal)
-            const nextFirstWord = restWords[0]?.toLowerCase();
-            if (!openingRotations[nextFirstWord]) {
-              s = rest.charAt(0).toUpperCase() + rest.slice(1);
-              changeLog.openingsVaried++;
-              modified = true;
-            }
-          }
-        }
-      }
-    }
-
-    return s;
-  });
-
-  // Flatten split sentences
-  const flatSentences = [];
-  newSentences.forEach(s => {
-    if (s.startsWith('\x00SPLIT\x00')) {
-      flatSentences.push(...s.replace('\x00SPLIT\x00', '').split('\x00SEP\x00'));
-    } else {
-      flatSentences.push(s);
-    }
-  });
-
-  return {
-    text:      flatSentences.join(' '),
-    changeLog,
-  };
+  return sentence; // cannot safely restructure
 }
 
 /**
+ * Strategy F — Remove an unnecessary transition opener.
+ * "Selain itu, X" → "X" when the transition is redundant.
+ * Only removes transitions that appear ≥2 times in the text.
+ */
+function strategyRemoveTransition(sentence, transitionLabel) {
+  const s = sentence.trim();
+  const lc = s.toLowerCase();
+  const tp = TRANSITION_PATTERNS.find(t => lc.startsWith(t.re.source
+    .replace('^','').replace(/\[,\\s\].*/,'').replace(/\\/g,'')));
+
+  // Simpler: just match on the label text
+  const labelLc = transitionLabel.toLowerCase();
+  if (!lc.startsWith(labelLc)) return sentence;
+
+  // Remove transition + following comma/space
+  const afterTransition = s.slice(transitionLabel.length).replace(/^[,\s]+/, '');
+  if (!afterTransition || afterTransition.split(/\s+/).length < 3) return sentence;
+
+  return afterTransition.charAt(0).toUpperCase() + afterTransition.slice(1);
+}
+
+/**
+ * Strategy G — Reorder clauses within a sentence while preserving meaning.
+ * Moves a trailing participial or conditional clause to the front.
+ */
+function strategyReorderClauses(sentence) {
+  const s = sentence.trim();
+  const words = s.split(/\s+/);
+  if (words.length < 10 || words.length > 40) return sentence;
+
+  // Look for sentences with a trailing conditional: "... karena X" or "... meskipun X"
+  const subordinators = ['karena','sehingga','meskipun','walaupun','agar','supaya','jika','apabila','although','because','since','if','so that'];
+  for (const sub of subordinators) {
+    const subIdx = words.map(w => w.toLowerCase().replace(/[,;]/,'')).lastIndexOf(sub);
+    if (subIdx > Math.floor(words.length * 0.5) && subIdx < words.length - 4) {
+      const main   = words.slice(0, subIdx).join(' ').replace(/[,;.]+$/, '');
+      const clause = words.slice(subIdx).join(' ').replace(/[.!?]+$/, '');
+      if (main.split(/\s+/).length >= 5 && clause.split(/\s+/).length >= 4) {
+        const result = clause.charAt(0).toUpperCase() + clause.slice(1) + ', ' + main.charAt(0).toLowerCase() + main.slice(1) + '.';
+        return result;
+      }
+    }
+  }
+  return sentence;
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   CANDIDATE GENERATION (3 meaningfully different strategies)
+   ────────────────────────────────────────────────────────────────── */
+
+/**
+ * Candidate 1 — MINIMAL REVISION
+ * Changes only the most obvious problems.
+ * Default is KEEP for all sentences unless the issue is clear.
+ * Strategies used: D (light redundancy), E (opening rotation 2nd+ only), F (transitions ≥3)
+ */
+function generateCandidateMinimal(sentences, classification, wordFreq, transitionCounts) {
+  const lastReplacedAt = {};
+  const changeLog = { synonymsReplaced: 0, transitionsRemoved: 0, openingsVaried: 0,
+                      sentencesSplit: 0, sentencesCombined: 0, keptSentences: 0 };
+
+  // Track opening occurrence counters
+  const openingOccurrences = {};
+
+  const result = [];
+  let i = 0;
+  while (i < sentences.length) {
+    const cl = classification[i];
+    const sentence = sentences[i];
+
+    // Count opening occurrence
+    const fw = sentence.trim().split(/\s+/)[0]?.toLowerCase() || '';
+    if (!STOP_WORDS.has(fw)) openingOccurrences[fw] = (openingOccurrences[fw]||0) + 1;
+    const occNum = (openingOccurrences[fw]||1) - 1; // 0-based
+
+    let s = sentence;
+    let changed = false;
+
+    if (cl.tier === 'KEEP') {
+      changeLog.keptSentences++;
+    } else {
+      // Strategy E: rotate opening ONLY if appears ≥3 times and this is occurrence ≥2
+      if (cl.issues.includes('repeated_opening') && occNum >= 1) {
+        const revised = strategyChangeOpening(s, occNum);
+        if (revised !== s) { s = revised; changeLog.openingsVaried++; changed = true; }
+      }
+
+      // Strategy D: reduce ONE overused word per sentence (conservative: minFreq=5, gap=3)
+      if (cl.issues.includes('overused_word') && !changed) {
+        const revised = strategyReduceRedundancy(s, wordFreq, lastReplacedAt, i, 5, 3);
+        if (revised !== s) { s = revised; changeLog.synonymsReplaced++; changed = true; }
+      }
+
+      // Strategy F: remove transition ONLY if used ≥3 times (very conservative)
+      if (cl.issues.includes('overused_transition')) {
+        const tp = TRANSITION_PATTERNS.find(p => p.re.test(s.toLowerCase().trim()));
+        if (tp && (transitionCounts[tp.label]||0) >= 3) {
+          const revised = strategyRemoveTransition(s, tp.label);
+          if (revised !== s) { s = revised; changeLog.transitionsRemoved++; changed = true; }
+        }
+      }
+
+      if (!changed) changeLog.keptSentences++;
+    }
+
+    result.push(s);
+    i++;
+  }
+
+  return { text: result.join(' '), changeLog };
+}
+
+/**
+ * Candidate 2 — BALANCED REVISION
+ * Improves rhythm, repetition, and transitions while maintaining author voice.
+ * Strategies: D (moderate), E (opening), F (transitions ≥2), B (very long sentences only)
+ */
+function generateCandidateBalanced(sentences, classification, wordFreq, transitionCounts) {
+  const lastReplacedAt = {};
+  const changeLog = { synonymsReplaced: 0, transitionsRemoved: 0, openingsVaried: 0,
+                      sentencesSplit: 0, sentencesCombined: 0, keptSentences: 0 };
+
+  const openingOccurrences = {};
+  const result = [];
+  let i = 0;
+
+  while (i < sentences.length) {
+    const cl = classification[i];
+    const sentence = sentences[i];
+
+    const fw = sentence.trim().split(/\s+/)[0]?.toLowerCase() || '';
+    if (!STOP_WORDS.has(fw)) openingOccurrences[fw] = (openingOccurrences[fw]||0) + 1;
+    const occNum = (openingOccurrences[fw]||1) - 1;
+
+    let s = sentence;
+    let changeCount = 0;
+
+    if (cl.tier === 'KEEP' && !cl.issues.includes('overused_word')) {
+      changeLog.keptSentences++;
+      result.push(s);
+      i++;
+      continue;
+    }
+
+    // Strategy B: split very long sentences (>35 words)
+    if (cl.issues.includes('too_long')) {
+      const parts = strategySplitSentence(s);
+      if (parts.length > 1) {
+        result.push(...parts);
+        changeLog.sentencesSplit++;
+        i++;
+        continue;
+      }
+    }
+
+    // Strategy F: remove overused transitions (≥2 occurrences)
+    if (cl.issues.includes('overused_transition')) {
+      const tp = TRANSITION_PATTERNS.find(p => p.re.test(s.toLowerCase().trim()));
+      if (tp && (transitionCounts[tp.label]||0) >= 2) {
+        const revised = strategyRemoveTransition(s, tp.label);
+        if (revised !== s) { s = revised; changeLog.transitionsRemoved++; changeCount++; }
+      }
+    }
+
+    // Strategy E: vary repeated sentence opening
+    if (cl.issues.includes('repeated_opening') && occNum >= 1) {
+      const revised = strategyChangeOpening(s, occNum);
+      if (revised !== s) { s = revised; changeLog.openingsVaried++; changeCount++; }
+    }
+
+    // Strategy D: reduce one overused word (moderate: minFreq=4, gap=2)
+    if (cl.issues.includes('overused_word') || cl.issues.includes('redundant_phrase')) {
+      const revised = strategyReduceRedundancy(s, wordFreq, lastReplacedAt, i, 4, 2);
+      if (revised !== s) { s = revised; changeLog.synonymsReplaced++; changeCount++; }
+    }
+
+    if (changeCount === 0) changeLog.keptSentences++;
+    result.push(s);
+    i++;
+  }
+
+  return { text: result.join(' '), changeLog };
+}
+
+/**
+ * Candidate 3 — STRUCTURAL REVISION
+ * Allows sentence combining/splitting and clause reordering where genuinely useful.
+ * Strategies: B (split), C (combine short pairs), E, F, G (reorder), D (active)
+ */
+function generateCandidateStructural(sentences, classification, wordFreq, transitionCounts) {
+  const lastReplacedAt = {};
+  const changeLog = { synonymsReplaced: 0, transitionsRemoved: 0, openingsVaried: 0,
+                      sentencesSplit: 0, sentencesCombined: 0, keptSentences: 0 };
+
+  const openingOccurrences = {};
+  const result = [];
+  let i = 0;
+
+  while (i < sentences.length) {
+    const cl   = classification[i];
+    const cl2  = classification[i+1]; // may be undefined
+    const sentence  = sentences[i];
+    const sentence2 = sentences[i+1];
+
+    const fw = sentence.trim().split(/\s+/)[0]?.toLowerCase() || '';
+    if (!STOP_WORDS.has(fw)) openingOccurrences[fw] = (openingOccurrences[fw]||0) + 1;
+    const occNum = (openingOccurrences[fw]||1) - 1;
+
+    let s = sentence;
+    let changeCount = 0;
+
+    // Strategy C: combine two very short adjacent sentences
+    if (cl.wc <= 7 && cl2 && cl2.wc <= 7 && cl.tier !== 'KEEP') {
+      const combined = strategyCombineSentences(s, sentence2);
+      if (combined) {
+        result.push(combined);
+        changeLog.sentencesCombined++;
+        i += 2; // consume both
+        continue;
+      }
+    }
+
+    // Strategy B: split long sentences
+    if (cl.issues.includes('too_long')) {
+      const parts = strategySplitSentence(s);
+      if (parts.length > 1) {
+        result.push(...parts);
+        changeLog.sentencesSplit++;
+        i++;
+        continue;
+      }
+    }
+
+    // Strategy G: reorder clauses for moderate+ sentences
+    if ((cl.tier === 'REVISE_MODERATE' || cl.tier === 'REVISE_STRONG') && cl.wc >= 12 && cl.wc <= 40) {
+      const revised = strategyReorderClauses(s);
+      if (revised !== s) { s = revised; changeCount++; }
+    }
+
+    // Strategy F: remove overused transitions
+    if (cl.issues.includes('overused_transition')) {
+      const tp = TRANSITION_PATTERNS.find(p => p.re.test(s.toLowerCase().trim()));
+      if (tp && (transitionCounts[tp.label]||0) >= 2) {
+        const revised = strategyRemoveTransition(s, tp.label);
+        if (revised !== s) { s = revised; changeLog.transitionsRemoved++; changeCount++; }
+      }
+    }
+
+    // Strategy E: vary repeated sentence opening
+    if (cl.issues.includes('repeated_opening') && occNum >= 1) {
+      const revised = strategyChangeOpening(s, occNum);
+      if (revised !== s) { s = revised; changeLog.openingsVaried++; changeCount++; }
+    }
+
+    // Strategy D: reduce overused words (active: minFreq=3, gap=2)
+    if (cl.issues.includes('overused_word') || cl.issues.includes('redundant_phrase')) {
+      const revised = strategyReduceRedundancy(s, wordFreq, lastReplacedAt, i, 3, 2);
+      if (revised !== s) { s = revised; changeLog.synonymsReplaced++; changeCount++; }
+    }
+
+    if (changeCount === 0) changeLog.keptSentences++;
+    result.push(s);
+    i++;
+  }
+
+  return { text: result.join(' '), changeLog };
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   SEMANTIC PRESERVATION VALIDATOR
+   ────────────────────────────────────────────────────────────────── */
+
+/**
+ * Check that key semantic content (numbers, proper nouns, citations, quoted phrases)
+ * is preserved between original and revised text.
+ * Returns { preserved: boolean, loss: number 0-1 }
+ */
+function checkSemanticPreservation(origText, revisedText) {
+  // Extract: numbers, capitalised sequences (names/titles), quoted strings
+  const extractKeyTokens = text => {
+    const numbers  = (text.match(/\b\d[\d.,%-]*\b/g) || []);
+    const caps     = (text.match(/\b[A-ZÀÁÂÄÆÃÅĀÈÉÊËĒĖĘÎÏÍĪĮÌÔÖÒÓŒØŌÕÙÚÛÜŪÛÑĆČŚŠŽŁŹŻÝ][a-zàáâäæãåāèéêëēėęîïíīįìôöòóœøōõùúûüūûñćčśšžłźżý]+/g) || []);
+    const quoted   = (text.match(/"[^"]+"|"[^"]+"/g) || []);
+    return new Set([...numbers, ...caps, ...quoted]);
+  };
+
+  const origKeys    = extractKeyTokens(origText);
+  const revisedKeys = extractKeyTokens(revisedText);
+
+  let preserved = 0;
+  origKeys.forEach(k => { if (revisedKeys.has(k)) preserved++; });
+
+  if (origKeys.size === 0) return { preserved: true, loss: 0 };
+  const lossRate = 1 - preserved / origKeys.size;
+  return { preserved: lossRate < 0.15, loss: lossRate }; // allow up to 15% loss (tokenisation noise)
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   HOLISTIC WRITING QUALITY SCORE
+   ────────────────────────────────────────────────────────────────── */
+
+/**
+ * Compute a Natural Writing Quality Score (0–100) for a candidate.
+ *
+ * This is NOT an AI probability. It is a multi-dimensional quality index
+ * for COMPARING candidates. Higher = better holistic writing quality.
+ *
+ * Dimensions:
+ *   25 pts — Repetition control (lex + phrase)
+ *   20 pts — Sentence rhythm (variation + burstiness)
+ *   15 pts — Word-count stability (95–105% of original = max)
+ *   15 pts — Vocabulary diversity improvement
+ *   15 pts — Semantic preservation
+ *   10 pts — No score regression (overall risk didn't worsen)
+ *
+ * NOTE: overall risk score delta contributes only 10/100 pts.
+ *       Writing quality is the primary signal.
+ */
+function computeWritingQualityScore(origAnalysis, candAnalysis, semanticResult) {
+  const v = {
+    lexDiff:    origAnalysis.features.lexicalRepetition.score  - candAnalysis.features.lexicalRepetition.score,
+    phraseDiff: origAnalysis.features.phraseRepetition.score   - candAnalysis.features.phraseRepetition.score,
+    unifDiff:   origAnalysis.features.sentenceUniformity.score - candAnalysis.features.sentenceUniformity.score,
+    burstDiff:  origAnalysis.features.burstiness.score         - candAnalysis.features.burstiness.score,
+    vocabDiff:  origAnalysis.features.vocabularyDiversity.score- candAnalysis.features.vocabularyDiversity.score,
+    overallDiff: origAnalysis.finalScore - candAnalysis.finalScore,
+  };
+  const wordRatio = candAnalysis.wordCount / Math.max(1, origAnalysis.wordCount);
+
+  // Dimension 1: Repetition control (25 pts)
+  const lexPts   = Math.max(0, Math.min(15, v.lexDiff * 2.5));   // >6 pt reduction = full 15
+  const phrasPts = Math.max(0, Math.min(10, v.phraseDiff * 2.0));
+  const d1 = lexPts + phrasPts;
+
+  // Dimension 2: Sentence rhythm (20 pts)
+  const unifPts  = Math.max(0, Math.min(12, v.unifDiff * 2.0));
+  const burstPts = Math.max(0, Math.min(8,  v.burstDiff * 1.5));
+  const d2 = unifPts + burstPts;
+
+  // Dimension 3: Word-count stability (15 pts)
+  // 0.95-1.05 = 15; 0.90-0.95 or 1.05-1.10 = 10; outside = penalty
+  let d3;
+  if (wordRatio >= 0.95 && wordRatio <= 1.05) d3 = 15;
+  else if (wordRatio >= 0.90 && wordRatio <= 1.10) d3 = 10;
+  else if (wordRatio >= 0.85 && wordRatio <= 1.15) d3 = 5;
+  else d3 = 0;
+
+  // Dimension 4: Vocabulary diversity (15 pts)
+  const d4 = Math.max(0, Math.min(15, v.vocabDiff * 2.5));
+
+  // Dimension 5: Semantic preservation (15 pts)
+  const d5 = semanticResult.preserved ? 15 : Math.round(15 * (1 - semanticResult.loss));
+
+  // Dimension 6: Risk score stability — didn't worsen (10 pts)
+  // Neutral = 5 pts (no change); improvement gives more; regression deducts
+  const d6 = v.overallDiff >= 0
+    ? Math.min(10, 5 + v.overallDiff * 0.5)
+    : Math.max(0, 5 + v.overallDiff * 0.8); // penalise regression more steeply
+
+  return Math.round(d1 + d2 + d3 + d4 + d5 + d6);
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   VALIDATION & SELECTION
+   ────────────────────────────────────────────────────────────────── */
+
+/**
  * Validate whether a candidate revision improved the writing profile.
- * Returns a score (higher = better improvement) and a boolean pass/fail.
- *
- * Scoring rules (each worth up to 1 point):
- *   +1  if lexical repetition score decreased by ≥2 points
- *   +1  if phrase repetition score decreased by ≥2 points
- *   +1  if sentence uniformity score decreased by ≥2 points (lower = more varied)
- *   +1  if burstiness score decreased by ≥2 points (lower = more natural)
- *   +0.5 if vocabulary diversity score decreased (= diversity increased, lower risk = better)
- *   -2  if OVERALL final score INCREASED (writing got objectively worse)
- *   -1  if word count expanded by >12% (unnecessary inflation)
- *   -0.5 for each metric that worsened beyond a noise threshold
- *
- * A candidate PASSES validation if validationScore >= 0.5
- * AND finalScore did not increase beyond a 3-point noise threshold.
+ * Also incorporates semantic preservation check.
+ * Returns a score (higher = better) and a boolean pass/fail.
  */
 function validateImprovement(origAnalysis, candAnalysis) {
   let score = 0;
@@ -2059,95 +2809,249 @@ function validateImprovement(origAnalysis, candAnalysis) {
  * Select the best candidate from a list of {text, analysis, validation} objects.
  * Prefers:
  *   1. Candidates that pass validation (validation.passes === true)
- *   2. Among passing candidates: highest validation score
- *   3. If no candidate passes: return null (caller must use original text)
+ *   2. Among passing candidates: highest holistic qualityIndex (NOT just risk score delta)
+ *   3. If no candidate passes: return null (caller must show fail-safe)
  */
 function selectBestRevision(candidates) {
   const passing = candidates.filter(c => c.validation.passes);
   if (passing.length === 0) return null;
-  return passing.sort((a, b) => b.validation.score - a.validation.score)[0];
+  // Use qualityIndex (holistic Writing Quality Score) for selection
+  return passing.sort((a, b) => (b.qualityIndex||0) - (a.qualityIndex||0))[0];
 }
 
 /**
- * Main entry point for the improvement workflow.
- * Generates up to 3 candidates with different strategy parameters,
- * analyzes all of them, validates each, and selects the best.
+ * Rank all 3 revision candidates by their holistic Writing Quality Index.
+ *
+ * qualityIndex is already computed by computeWritingQualityScore() during generation.
+ * This function only assigns .candNum, .rankNum, and .qualityLabel.
+ *
+ * Returns annotated candidates in original order (candNum 1/2/3).
+ */
+function rankRevisionCandidates(candidates, origAnalysis) {
+  const scored = candidates.map((c, i) => ({
+    ...c,
+    // qualityIndex already set by computeWritingQualityScore; fall back to 0 if missing
+    qualityIndex: c.qualityIndex ?? 0,
+    candNum: i + 1,
+  }));
+
+  // Sort descending by qualityIndex
+  const sorted = [...scored].sort((a, b) => b.qualityIndex - a.qualityIndex);
+
+  // Assign rank labels
+  sorted.forEach((c, idx) => {
+    c.rankNum = idx + 1;
+    if (idx === 0)        c.qualityLabel = 'Kandidat Terbaik';
+    else if (idx === 1)   c.qualityLabel = 'Cukup Baik';
+    else                  c.qualityLabel = 'Perlu Ditinjau';
+  });
+
+  // Return in original order (candNum 1/2/3) with rank info attached
+  return scored.map(c => {
+    const rankInfo = sorted.find(s => s.candNum === c.candNum);
+    return { ...c, rankNum: rankInfo.rankNum, qualityLabel: rankInfo.qualityLabel };
+  });
+}
+
+/**
+ * Determine the fail-safe state from the full candidate set.
+ *
+ * STATE A — 'validated'  : at least one candidate passes strict validation
+ * STATE B — 'mixed'      : no candidate passes, but best qualityIndex > 35
+ *                           AND at least one metric improved meaningfully
+ * STATE C — 'none'       : all candidates are worse overall
+ */
+function determineFailsafeState(candidates, ranking) {
+  if (candidates.some(c => c.validation.passes)) return 'validated';
+  const best = ranking.find(c => c.rankNum === 1);
+  if (!best) return 'none';
+  const hasMeaningfulGain =
+    best.validation.lexDiff   >= 2 ||
+    best.validation.phraseDiff >= 2 ||
+    best.validation.unifDiff  >= 2 ||
+    best.validation.burstDiff >= 2;
+  if (best.qualityIndex > 35 && hasMeaningfulGain) return 'mixed';
+  return 'none';
+}
+
+/**
+ * Build human-readable change log entries from a candidate's changeLog counters.
+ */
+function buildChangeMade(candidate) {
+  const cl = candidate.changeLog;
+  const out = [];
+  if (cl.synonymsReplaced > 0)
+    out.push(`${cl.synonymsReplaced} pengulangan kata dikurangi melalui variasi sinonim`);
+  if (cl.transitionsRemoved > 0)
+    out.push(`${cl.transitionsRemoved} transisi berulang yang tidak perlu dihapus`);
+  if (cl.openingsVaried > 0)
+    out.push(`${cl.openingsVaried} pembuka kalimat yang berulang divariasikan`);
+  if (cl.sentencesSplit > 0)
+    out.push(`${cl.sentencesSplit} kalimat terlalu panjang dipecah menjadi lebih pendek`);
+  if (cl.sentencesCombined > 0)
+    out.push(`${cl.sentencesCombined} kalimat sangat pendek yang berdekatan digabungkan`);
+  if (cl.keptSentences > 0)
+    out.push(`${cl.keptSentences} kalimat dipertahankan tanpa perubahan`);
+  return out;
+}
+
+/**
+ * Main entry point for the Writing Improver v4 workflow.
+ *
+ * Pipeline: DIAGNOSE → TARGET → REVISE → RECHECK → RANK → SELECT
  *
  * Returns:
- *   { improvedText, changeMade, validation, usedOriginal }
- *
- * If usedOriginal === true, no candidate passed validation and the original
- * text was preserved.
+ *   {
+ *     improvedText, changeMade, validation, usedOriginal,
+ *     allCandidates,   // ranked array — always present
+ *     ranking,         // same array (alias)
+ *     failsafeState,   // 'validated' | 'mixed' | 'none'
+ *     bestCandidateIdx // 0-based index into allCandidates of the top-ranked candidate
+ *   }
  *
  * API integration point (future):
- * Replace generateOneCandidate() with a call to a language model API.
- * The validation and selection loop below is API-agnostic.
+ * Replace generateCandidateMinimal/Balanced/Structural with LLM calls.
+ * The classify → validate → rank loop is API-agnostic.
  */
 function generateImprovedText(text, settings) {
-  const sentences = getSentences(text);
-  const words     = getWords(text);
-  const wordFreq  = {};
+  // ── DOCUMENT STRUCTURE PRESERVATION ─────────────────────────────────────
+  // Parse the full text into typed blocks BEFORE any rewriting.
+  // Only "paragraph" blocks enter the revision pipeline.
+  // title, author, heading, citation, quotation, bullet, numbered blocks are
+  // passed through UNCHANGED and reassembled afterwards.
+  const origDoc = parseDocument(text);
+
+  // Extract only paragraph blocks for analysis (order-preserving)
+  const paragraphBlocks = origDoc.blocks.filter(b => b.type === 'paragraph');
+
+  // If no paragraph blocks were found, fall back to the full text as one paragraph
+  const analysisText = paragraphBlocks.length > 0
+    ? paragraphBlocks.map(b => b.content).join('\n\n')
+    : text;
+
+  // Build global word frequency from PROSE CONTENT ONLY
+  const words    = getWords(analysisText);
+  const wordFreq = {};
   words.forEach(w => { wordFreq[w] = (wordFreq[w] || 0) + 1; });
 
+  // analyzeText() operates on the full text so sentence/word stats are correct
   const origAnalysis = analyzeText(text);
-  const patternReport = analyzeWritingPatterns(sentences, wordFreq);
 
-  // Define 3 strategy configurations — each attempts a different balance
-  const strategies = [
-    // Strategy 1: Conservative — only touch words repeated ≥5 times, large gap, no opening variation
-    { synonymMinFreq: 5, synonymGap: 3, splitThreshold: 32, openingVariationMode: 'none',   label: 'konservatif' },
-    // Strategy 2: Moderate — touch words repeated ≥4 times, medium gap, rotate openings
-    { synonymMinFreq: 4, synonymGap: 2, splitThreshold: 30, openingVariationMode: 'rotate', label: 'sedang' },
-    // Strategy 3: Active — touch words repeated ≥3 times, shorter gap, rotate openings + split shorter sentences
-    { synonymMinFreq: 3, synonymGap: 2, splitThreshold: 28, openingVariationMode: 'rotate', label: 'aktif' },
-  ];
+  // ── DIAGNOSE: sentences across all paragraphs (for global classification) ─
+  // getSentences() is called per-paragraph so newlines are NOT collapsed globally.
+  const allSentences = paragraphBlocks.length > 0
+    ? paragraphBlocks.flatMap(b => getSentences(b.content))
+    : getSentences(text);
 
-  const candidates = [];
+  const classification = classifySentences(allSentences, wordFreq);
 
-  strategies.forEach(strategy => {
-    const { text: candText, changeLog } = generateOneCandidate(text, patternReport, strategy);
-
-    // Re-analyze the candidate using the same full analysis engine
-    const candAnalysis = analyzeText(candText);
-
-    // Validate the candidate
-    const validation = validateImprovement(origAnalysis, candAnalysis);
-
-    candidates.push({
-      text:       candText,
-      analysis:   candAnalysis,
-      validation,
-      changeLog,
-      strategy:   strategy.label,
+  // ── Build transition count map (global, across all paragraphs) ───────────
+  const transitionCounts = {};
+  allSentences.forEach(s => {
+    const s_lc = s.toLowerCase().trim();
+    TRANSITION_PATTERNS.forEach(tp => {
+      if (tp.re.test(s_lc)) transitionCounts[tp.label] = (transitionCounts[tp.label]||0) + 1;
     });
   });
 
-  const best = selectBestRevision(candidates);
+  // ── Helper: rewrite paragraph blocks using a candidate generator ──────────
+  // Each generator receives the per-paragraph sentence array.
+  // Returns the full reconstructed document text (structure preserved).
+  const rewriteWithGenerator = (genFn) => {
+    let sentIdx = 0; // global sentence index into allSentences / classification
+    const combinedChangeLog = { synonymsReplaced: 0, transitionsRemoved: 0,
+      openingsVaried: 0, sentencesSplit: 0, sentencesCombined: 0, keptSentences: 0 };
 
-  if (!best) {
-    // No candidate passed validation — return original text unchanged
+    const newBlocks = origDoc.blocks.map(block => {
+      // Non-paragraph blocks pass through unchanged
+      if (block.type !== 'paragraph') return { ...block };
+
+      // Get the sentences for THIS paragraph only
+      const paraSentences    = getSentences(block.content);
+      const paraClassif      = classification.slice(sentIdx, sentIdx + paraSentences.length);
+      sentIdx += paraSentences.length;
+
+      if (paraSentences.length === 0) return { ...block };
+
+      // Run the generator on this paragraph's sentences
+      const { text: revisedPara, changeLog } = genFn(
+        paraSentences, paraClassif, wordFreq, transitionCounts
+      );
+
+      // Accumulate change log
+      Object.keys(combinedChangeLog).forEach(k => {
+        if (changeLog[k] !== undefined) combinedChangeLog[k] += changeLog[k];
+      });
+
+      return { type: 'paragraph', content: revisedPara };
+    });
+
+    // Reconstruct the full document text
+    const candDoc  = { title: origDoc.title, author: origDoc.author, blocks: newBlocks };
+    const candText = reconstructDocumentText(candDoc);
+    return { text: candText, changeLog: combinedChangeLog, document: candDoc };
+  };
+
+  // ── REVISE: Generate 3 meaningfully different candidates ─────────────────
+  const candidateGenerators = [
+    { fn: generateCandidateMinimal,    label: 'minimal' },
+    { fn: generateCandidateBalanced,   label: 'seimbang' },
+    { fn: generateCandidateStructural, label: 'struktural' },
+  ];
+
+  const rawCandidates = candidateGenerators.map(gen => {
+    const { text: candText, changeLog, document: candDoc } = rewriteWithGenerator(gen.fn);
+    const candAnalysis = analyzeText(candText);
+    const validation   = validateImprovement(origAnalysis, candAnalysis);
+    const semantic     = checkSemanticPreservation(text, candText);
+    const qualityIndex = computeWritingQualityScore(origAnalysis, candAnalysis, semantic);
     return {
-      improvedText:  text,
-      changeMade:    [],
-      validation:    null,
-      usedOriginal:  true,
+      text: candText, document: candDoc, analysis: candAnalysis, validation,
+      changeLog, strategy: gen.label, semantic, qualityIndex,
+    };
+  });
+
+  // ── Rank ALL candidates (including those that failed validation) ──────────
+  const ranking = rankRevisionCandidates(rawCandidates, origAnalysis);
+
+  // ── Determine overall state ───────────────────────────────────────────────
+  const failsafeState = determineFailsafeState(rawCandidates, ranking);
+
+  // ── Find the best validated candidate (or null) ───────────────────────────
+  const bestValidated = selectBestRevision(rawCandidates);
+
+  // ── Find the best-ranked candidate (always exists) ───────────────────────
+  const topRanked = ranking.find(c => c.rankNum === 1);
+
+  if (!bestValidated) {
+    const bestCandidateIdx = topRanked ? topRanked.candNum - 1 : 0;
+    return {
+      improvedText:     text,
+      origDocument:     origDoc,
+      changeMade:       [],
+      validation:       null,
+      usedOriginal:     true,
+      allCandidates:    ranking,
+      ranking,
+      failsafeState,
+      bestCandidateIdx,
     };
   }
 
-  // Build human-readable change log from actual changeLog counts
-  const changeMade = [];
-  if (best.changeLog.synonymsReplaced > 0)
-    changeMade.push(`${best.changeLog.synonymsReplaced} pengulangan kata dikurangi melalui variasi sinonim`);
-  if (best.changeLog.sentencesSplit > 0)
-    changeMade.push(`${best.changeLog.sentencesSplit} kalimat terlalu panjang dipecah menjadi lebih pendek`);
-  if (best.changeLog.openingsVaried > 0)
-    changeMade.push(`${best.changeLog.openingsVaried} pembuka kalimat yang berulang divariasikan`);
+  const validatedCandNum = rawCandidates.findIndex(c => c === bestValidated) + 1;
+  const bestCandidateIdx = validatedCandNum - 1;
+  const changeMade       = buildChangeMade(bestValidated);
 
   return {
-    improvedText:  best.text,
+    improvedText:     bestValidated.text,
+    origDocument:     origDoc,
     changeMade,
-    validation:    best.validation,
-    usedOriginal:  false,
+    validation:       bestValidated.validation,
+    usedOriginal:     false,
+    allCandidates:    ranking,
+    ranking,
+    failsafeState,
+    bestCandidateIdx,
   };
 }
 
@@ -2430,7 +3334,8 @@ function renderChangeLog(changeMade) {
 }
 
 /* ============================================================
-   MODULE: WRITING IMPROVER UI CONTROLLER v2
+   MODULE: WRITING IMPROVER UI CONTROLLER v3
+   Adds full candidate transparency: rank, preview, accept/cancel.
    ============================================================ */
 
 /** Current settings state */
@@ -2440,8 +3345,46 @@ const improverState = {
 };
 
 /** Last improved text — used as input for second pass */
-let _lastImprovedText = null;
+let _lastImprovedText    = null;
 let _lastImprovedAnalysis = null;
+
+/**
+ * Candidate state — populated by runImproverPass, consumed by the preview UI.
+ * These are never cleared between passes so the user can always inspect them.
+ */
+let _allCandidates      = null;  // ranked array from rankRevisionCandidates
+let _origAnalysisForCmp = null;  // original analysis at time of improvement run
+let _chosenCandidateIdx = 0;     // 0-based index of currently previewed candidate
+let _failsafeState      = null;  // 'validated' | 'mixed' | 'none'
+
+/**
+ * Document structure state — preserves typed blocks for panel rendering.
+ * _origDocument     : parsed document from the original analyzed text.
+ * _improvedDocument : parsed document from the current improved/accepted text.
+ * _formatMode       : 'document' | 'plaintext' — controls panel render mode.
+ */
+let _origDocument     = null;
+let _improvedDocument = null;
+let _formatMode       = 'document'; // default to document view
+
+/**
+ * Switch all visible text panels between document-view and plaintext-view.
+ * Called from the format toggle buttons.
+ */
+function applyFormatMode(mode) {
+  _formatMode = mode;
+
+  // Re-render original panel
+  if (_origDocument) {
+    renderPanel(_origDocument, $('originalTextPanel'));
+    renderPanel(_origDocument, $('compareOrigPanel'));
+  }
+  // Re-render improved panel
+  if (_improvedDocument) {
+    renderPanel(_improvedDocument, $('improvedTextPanel'));
+    renderPanel(_improvedDocument, $('compareImpPanel'));
+  }
+}
 
 /**
  * Initialize button group toggle logic.
@@ -2586,6 +3529,386 @@ function showImproveAgainBtn(show) {
   if (btn) btn.style.display = show ? '' : 'none';
 }
 
+/* ============================================================
+   MODULE: CANDIDATE PREVIEW SYSTEM
+   ============================================================ */
+
+/**
+ * Build the metric comparison rows for a candidate vs original.
+ * Reuses the same row structure as compareTexts() so we can share renderComparisonTable().
+ */
+function buildCandidateCompareRows(origAnalysis, candAnalysis) {
+  const o = origAnalysis;
+  const c = candAnalysis;
+  return [
+    {
+      metric: 'AI Writing Risk Score',
+      origNum: o.finalScore, impNum: c.finalScore,
+      origVal: o.finalScore + '%', impVal: c.finalScore + '%',
+      unit: '%', higherIsBetter: false,
+    },
+    {
+      metric: 'Keragaman Kosakata (TTR)',
+      origNum: Math.round(o.features.vocabularyDiversity.ttr * 100),
+      impNum:  Math.round(c.features.vocabularyDiversity.ttr * 100),
+      origVal: Math.round(o.features.vocabularyDiversity.ttr * 100) + '%',
+      impVal:  Math.round(c.features.vocabularyDiversity.ttr * 100) + '%',
+      unit: '%', higherIsBetter: true,
+    },
+    {
+      metric: 'Variasi Kalimat (CV)',
+      origNum: Math.round(o.features.sentenceUniformity.raw.cv * 100),
+      impNum:  Math.round(c.features.sentenceUniformity.raw.cv * 100),
+      origVal: (o.features.sentenceUniformity.raw.cv * 100).toFixed(1) + '%',
+      impVal:  (c.features.sentenceUniformity.raw.cv * 100).toFixed(1) + '%',
+      unit: '%', higherIsBetter: true,
+    },
+    {
+      metric: 'Repetisi Kata',
+      origNum: Math.round(o.features.lexicalRepetition.score),
+      impNum:  Math.round(c.features.lexicalRepetition.score),
+      origVal: Math.round(o.features.lexicalRepetition.score) + '%',
+      impVal:  Math.round(c.features.lexicalRepetition.score) + '%',
+      unit: '%', higherIsBetter: false,
+    },
+    {
+      metric: 'Repetisi Frasa',
+      origNum: Math.round(o.features.phraseRepetition.score),
+      impNum:  Math.round(c.features.phraseRepetition.score),
+      origVal: Math.round(o.features.phraseRepetition.score) + '%',
+      impVal:  Math.round(c.features.phraseRepetition.score) + '%',
+      unit: '%', higherIsBetter: false,
+    },
+    {
+      metric: 'Keseragaman Struktur',
+      origNum: Math.round(o.features.structuralConsistency.score),
+      impNum:  Math.round(c.features.structuralConsistency.score),
+      origVal: Math.round(o.features.structuralConsistency.score) + '%',
+      impVal:  Math.round(c.features.structuralConsistency.score) + '%',
+      unit: '%', higherIsBetter: false,
+    },
+    {
+      metric: 'Variasi Tanda Baca',
+      origNum: Math.round(o.features.punctuationVariation.score),
+      impNum:  Math.round(c.features.punctuationVariation.score),
+      origVal: Math.round(o.features.punctuationVariation.score) + '%',
+      impVal:  Math.round(c.features.punctuationVariation.score) + '%',
+      unit: '%', higherIsBetter: false,
+    },
+    {
+      metric: 'Burstiness (Variasi Ritme)',
+      origNum: Math.round(o.features.burstiness.score),
+      impNum:  Math.round(c.features.burstiness.score),
+      origVal: Math.round(o.features.burstiness.score) + '%',
+      impVal:  Math.round(c.features.burstiness.score) + '%',
+      unit: '%', higherIsBetter: false,
+    },
+    {
+      metric: 'Rata-rata Panjang Kalimat',
+      origNum: o.features.sentenceUniformity.raw.mean,
+      impNum:  c.features.sentenceUniformity.raw.mean,
+      origVal: o.features.sentenceUniformity.raw.mean + ' kata',
+      impVal:  c.features.sentenceUniformity.raw.mean + ' kata',
+      unit: 'kata', higherIsBetter: null,
+    },
+    {
+      metric: 'Jumlah Kata',
+      origNum: o.wordCount, impNum: c.wordCount,
+      origVal: o.wordCount.toLocaleString('id-ID'),
+      impVal:  c.wordCount.toLocaleString('id-ID'),
+      unit: 'kata', higherIsBetter: null,
+    },
+  ];
+}
+
+/**
+ * Render the candidate ranking summary table inside #candRankingTableBody.
+ */
+function renderCandidateRankingTable(ranking, activeCandNum) {
+  const tbody = $('candRankingTableBody');
+  if (!tbody) return;
+  tbody.innerHTML = ranking.map(c => {
+    const isActive  = c.candNum === activeCandNum;
+    const rowClass  = isActive ? 'cand-row-active' : '';
+    const labelCls  = c.rankNum === 1 ? 'cand-label-best' : c.rankNum === 2 ? 'cand-label-ok' : 'cand-label-review';
+    const passedBadge = c.validation.passes
+      ? '<span class="cand-badge-pass">✓ Tervalidasi</span>'
+      : '<span class="cand-badge-fail">— Tidak Tervalidasi</span>';
+    return `<tr class="${rowClass}" data-cand="${c.candNum - 1}" role="button" tabindex="0"
+        aria-label="Pilih Kandidat ${c.candNum}">
+      <td class="cand-num-cell">Kandidat ${c.candNum}</td>
+      <td><span class="cand-qual-label ${labelCls}">${c.qualityLabel}</span></td>
+      <td class="cand-qi-cell">${c.qualityIndex}<small>/100</small></td>
+      <td>${passedBadge}</td>
+    </tr>`;
+  }).join('');
+
+  // Row click handler — switch candidate
+  tbody.querySelectorAll('tr[data-cand]').forEach(row => {
+    const handler = () => {
+      const idx = parseInt(row.dataset.cand, 10);
+      if (_allCandidates && _origAnalysisForCmp) {
+        _chosenCandidateIdx = idx;
+        renderCandidatePreview(idx);
+      }
+    };
+    row.addEventListener('click', handler);
+    row.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); } });
+  });
+}
+
+/**
+ * Render the metric comparison table inside #candMetricTableBody.
+ * Reuses renderComparisonTable logic but targets a different tbody.
+ */
+function renderCandidateMetricTable(rows) {
+  const tbody = $('candMetricTableBody');
+  if (!tbody) return;
+  tbody.innerHTML = rows.map(row => {
+    const diff = row.impNum - row.origNum;
+    let arrowHtml;
+    if (row.higherIsBetter === null || Math.abs(diff) < 0.5) {
+      arrowHtml = `<span class="cmp-arrow-same">—</span>`;
+    } else {
+      const isImprovement = row.higherIsBetter ? diff > 0 : diff < 0;
+      const sign = diff > 0 ? '↑ +' : '↓ ';
+      const cls  = isImprovement ? 'cmp-arrow-up' : 'cmp-arrow-down';
+      const valStr = row.unit === '%' || row.unit === 'kata'
+        ? `${Math.abs(diff).toFixed(row.unit === '%' ? 0 : 1)} ${row.unit}`
+        : Math.abs(diff);
+      const label = isImprovement ? 'Membaik' : 'Berubah';
+      arrowHtml = `<span class="${cls}">${sign}${valStr} ${label}</span>`;
+    }
+    return `<tr>
+      <td style="font-weight:600;color:var(--text-primary);white-space:nowrap;">${row.metric}</td>
+      <td class="cmp-orig">${row.origVal}</td>
+      <td class="cmp-impr">${row.impVal}</td>
+      <td>${arrowHtml}</td>
+    </tr>`;
+  }).join('');
+}
+
+/**
+ * Update the score summary strip at the top of the preview card.
+ */
+function renderCandidateScoreSummary(origAnalysis, candAnalysis, cand) {
+  const el = $('candScoreSummary');
+  if (!el) return;
+  const delta    = candAnalysis.finalScore - origAnalysis.finalScore;
+  const deltaStr = delta === 0 ? '±0%' : (delta > 0 ? `↑ +${delta}%` : `↓ ${Math.abs(delta)}%`);
+  const deltaClass = delta > 0 ? 'cand-delta-up' : delta < 0 ? 'cand-delta-down' : 'cand-delta-same';
+  el.innerHTML = `
+    <div class="cand-score-block">
+      <div class="cand-score-label">Teks Asli</div>
+      <div class="cand-score-val">${origAnalysis.finalScore}%</div>
+      <div class="cand-score-sub">AI Writing Risk Score</div>
+    </div>
+    <div class="cand-score-arrow">→</div>
+    <div class="cand-score-block">
+      <div class="cand-score-label">Kandidat ${cand.candNum}</div>
+      <div class="cand-score-val">${candAnalysis.finalScore}%</div>
+      <div class="cand-score-sub">Perubahan skor pola tulisan</div>
+    </div>
+    <div class="cand-score-block">
+      <div class="cand-score-label">Perubahan</div>
+      <div class="cand-score-val ${deltaClass}">${deltaStr}</div>
+      <div class="cand-score-sub" style="font-size:0.72rem;max-width:140px;">Bukan ukuran keaslian tulisan</div>
+    </div>`;
+}
+
+/**
+ * Build the "Mengapa Kandidat Ini Dipilih?" explanation block.
+ */
+function renderCandidateWhyBlock(cand, origAnalysis) {
+  const el = $('candWhyBlock');
+  if (!el) return;
+  const v = cand.validation;
+  const reasons = [];
+  if (v.lexDiff   >= 2) reasons.push(`pengurangan repetisi kata (−${Math.round(v.lexDiff)} poin)`);
+  if (v.phraseDiff >= 2) reasons.push(`pengurangan repetisi frasa (−${Math.round(v.phraseDiff)} poin)`);
+  if (v.unifDiff  >= 2) reasons.push(`variasi panjang kalimat meningkat (−${Math.round(v.unifDiff)} poin keseragaman)`);
+  if (v.burstDiff >= 2) reasons.push(`variasi ritme kalimat meningkat (−${Math.round(v.burstDiff)} poin)`);
+  if (v.vocabDiff >= 2) reasons.push(`keragaman kosakata meningkat (−${Math.round(v.vocabDiff)} poin)`);
+  const wc = cand.analysis.wordCount / Math.max(1, origAnalysis.wordCount);
+  if (wc >= 0.92 && wc <= 1.08) reasons.push(`jumlah kata tetap mendekati teks asli (${cand.analysis.wordCount} kata)`);
+
+  const body = reasons.length > 0
+    ? `<ul class="cand-why-list">${reasons.map(r => `<li>${r}</li>`).join('')}</ul>`
+    : `<p style="color:var(--text-muted);font-size:0.82rem;">Tidak ada peningkatan signifikan yang terdeteksi pada kandidat ini.</p>`;
+
+  el.innerHTML = `
+    <p class="cand-why-intro">Kandidat ${cand.candNum} dari 3 — dipilih berdasarkan Writing Pattern Quality Index (${cand.qualityIndex}/100)</p>
+    ${body}`;
+}
+
+/**
+ * Render the full candidate preview card for a given 0-based candidate index.
+ * Uses stored _allCandidates and _origAnalysisForCmp — no regeneration.
+ */
+function renderCandidatePreview(candIdx) {
+  if (!_allCandidates || !_origAnalysisForCmp) return;
+  const cand     = _allCandidates[candIdx];
+  const origAna  = _origAnalysisForCmp;
+  const candAna  = cand.analysis;
+
+  // ── Candidate selector tabs ──────────────────────────────
+  document.querySelectorAll('.cand-tab').forEach(tab => {
+    const active = parseInt(tab.dataset.candIdx, 10) === candIdx;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', String(active));
+  });
+
+  // ── Score summary ─────────────────────────────────────────
+  renderCandidateScoreSummary(origAna, candAna, cand);
+
+  // ── Text panels — use structured rendering ────────────────
+  const origTxtEl = $('candOrigText');
+  const candTxtEl = $('candImpText');
+  if (origTxtEl) renderPanel(_origDocument || origAna.text, origTxtEl);
+  if (candTxtEl) renderPanel(cand.document  || cand.text,   candTxtEl);
+
+  // ── Metric table ──────────────────────────────────────────
+  const rows = buildCandidateCompareRows(origAna, candAna);
+  renderCandidateMetricTable(rows);
+
+  // ── Why block ─────────────────────────────────────────────
+  renderCandidateWhyBlock(cand, origAna);
+
+  // ── Ranking table (highlights active row) ─────────────────
+  renderCandidateRankingTable(_allCandidates, cand.candNum);
+
+  // ── Accept button label update ────────────────────────────
+  const acceptBtn = $('candAcceptBtn');
+  if (acceptBtn) {
+    const isExperimental = !cand.validation.passes;
+    acceptBtn.textContent = isExperimental
+      ? `⚠ Gunakan Kandidat ${cand.candNum} (Eksperimental)`
+      : `✓ Gunakan Kandidat ${cand.candNum}`;
+    acceptBtn.className = isExperimental
+      ? 'btn btn-ghost cand-accept-experimental'
+      : 'btn btn-primary';
+  }
+
+  // ── Experimental warning ──────────────────────────────────
+  const warnEl = $('candExperimentalWarn');
+  if (warnEl) {
+    warnEl.classList.toggle('hidden', cand.validation.passes);
+  }
+
+  $('candidatePreviewCard').classList.remove('hidden');
+  $('candidatePreviewCard').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+/**
+ * Accept the currently previewed candidate — use its stored analysis without
+ * regenerating any text. Updates the main Writing Improver panels + history.
+ */
+function acceptCandidate() {
+  if (!_allCandidates || !_origAnalysisForCmp) return;
+  const cand       = _allCandidates[_chosenCandidateIdx];
+  const candText   = cand.text;
+  const candAnalysis = cand.analysis;
+  const origAnalysis = _origAnalysisForCmp;
+
+  // Store as active improved result
+  _lastImprovedText     = candText;
+  _lastImprovedAnalysis = candAnalysis;
+
+  // Resolve document objects
+  const origDoc = _origDocument || parseDocument(origAnalysis.text);
+  const impDoc  = cand.document  || parseDocument(candText);
+  _improvedDocument = impDoc;
+
+  // ── Structure validation microcopy ─────────────────────────
+  const structCheck   = validateDocumentStructure(origDoc, impDoc);
+  const structStatus  = $('structureStatus');
+  if (structStatus) {
+    structStatus.textContent  = structCheck.message;
+    structStatus.className    = 'structure-status ' + (structCheck.ok ? 'ok' : 'warn');
+    structStatus.style.display = '';
+  }
+
+  // Update main text panels using structured rendering
+  renderPanel(origDoc, $('originalTextPanel'));
+  renderPanel(origDoc, $('compareOrigPanel'));
+  renderPanel(impDoc,  $('improvedTextPanel'));
+  renderPanel(impDoc,  $('compareImpPanel'));
+
+  // Show panels, switch to improved tab
+  $('improverPanels').classList.remove('hidden');
+  $('improverFailsafe').classList.add('hidden');
+  $('candidatePreviewCard').classList.add('hidden');
+  document.querySelectorAll('.view-tab').forEach(t => {
+    t.classList.remove('active'); t.setAttribute('aria-selected', 'false');
+  });
+  const impTab = document.querySelector('.view-tab[data-view="improved"]');
+  if (impTab) { impTab.classList.add('active'); impTab.setAttribute('aria-selected', 'true'); }
+  ['view-original','view-improved','view-compare'].forEach(id => {
+    const el = $(id);
+    if (el) el.classList.toggle('hidden', id !== 'view-improved');
+  });
+
+  // Evaluasi card
+  renderEvaluasi(origAnalysis, candAnalysis);
+
+  // Change log
+  const changeMade = buildChangeMade(cand);
+  renderChangeLog(changeMade);
+
+  // Comparison
+  const compareRows = compareTexts(origAnalysis, candAnalysis);
+  renderComparisonTable(compareRows);
+  renderComparisonCharts(origAnalysis, candAnalysis);
+  $('comparisonCard').classList.remove('hidden');
+
+  // Persist to history — includes all 3 candidates
+  if (currentAnalysis) {
+    updateHistoryWithImprovement(currentAnalysis.timestamp, {
+      improvedText:     candText,
+      improvedAnalysis: candAnalysis,
+      changeMade,
+      allCandidates:    _allCandidates,
+      chosenCandidateIdx: _chosenCandidateIdx,
+      failsafeState:    _failsafeState,
+    });
+  }
+
+  showImproveAgainBtn(true);
+  showToast(`Kandidat ${cand.candNum} diterima sebagai hasil perbaikan.`, 'success');
+  $('evaluasiCard').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+/**
+ * Render the state-aware fail-safe panel.
+ * STATE A (validated) — never shown (flow goes directly to success path)
+ * STATE B (mixed)     — "beberapa peningkatan" message + Lihat Kandidat Terbaik
+ * STATE C (none)      — "tidak ada yang lebih baik" message + Lihat Kandidat Terbaik (Eksperimental)
+ */
+function renderFailsafePanel(state, ranking) {
+  const panel  = $('improverFailsafe');
+  const desc   = $('failsafeDesc');
+  const btnRow = $('failsafeActions');
+  if (!panel || !desc || !btnRow) return;
+
+  const bestCand = ranking ? ranking.find(c => c.rankNum === 1) : null;
+
+  if (state === 'mixed') {
+    panel.className = 'improver-failsafe mixed';
+    $('failsafeTitle').textContent = 'Tidak Ada Revisi yang Sepenuhnya Memenuhi Kriteria';
+    desc.textContent = 'Tidak ada kandidat yang melewati semua ambang batas validasi, tetapi terdapat kandidat yang memiliki beberapa peningkatan terukur. Anda dapat memeriksa kandidat terbaik sebelum memutuskan.';
+    const viewBtn = $('failsafeViewBest');
+    if (viewBtn) viewBtn.textContent = `Lihat Kandidat Terbaik`;
+  } else {
+    panel.className = 'improver-failsafe';
+    $('failsafeTitle').textContent = 'Tidak Ada Revisi yang Lebih Baik Ditemukan';
+    desc.textContent = 'Ketiga kandidat tidak berhasil meningkatkan pola tulisan secara terukur. Anda masih dapat memeriksa kandidat terbaik sebagai bahan perbandingan.';
+    const viewBtn = $('failsafeViewBest');
+    if (viewBtn) viewBtn.textContent = `Lihat Kandidat Eksperimental`;
+  }
+
+  panel.classList.remove('hidden');
+}
+
 /**
  * Core improvement workflow — shared by first pass and "Perbaiki Lagi".
  * @param {string} inputText   — text to improve (original or last improved)
@@ -2603,42 +3926,70 @@ async function runImproverPass(inputText, origAnalysis, isSecondPass) {
   $('comparisonCard').classList.add('hidden');
   $('evaluasiCard').classList.add('hidden');
   $('improverFailsafe').classList.add('hidden');
+  $('candidatePreviewCard').classList.add('hidden');
 
   try {
     setStatus('analyzing', 'Memperbaiki tulisan...');
     await animateLoadingSteps();
     await new Promise(r => setTimeout(r, 300));
 
-    // v3 engine — returns { improvedText, changeMade[], validation, usedOriginal }
+    // v3 engine — returns { improvedText, changeMade[], validation, usedOriginal,
+    //                        allCandidates, ranking, failsafeState, bestCandidateIdx }
     const result = generateImprovedText(inputText, improverState);
-    const { improvedText, changeMade, usedOriginal } = result;
+    const { improvedText, changeMade, usedOriginal, allCandidates, ranking,
+            failsafeState, bestCandidateIdx } = result;
 
-    // ── FAIL-SAFE PATH ──────────────────────────────────────
-    // All 3 candidates failed validation — preserve the original text and
-    // show an honest message instead of silently accepting a degraded result.
+    // ── Store candidate state (always, regardless of path) ──────────────────
+    _allCandidates      = allCandidates;
+    _origAnalysisForCmp = origAnalysis;
+    _chosenCandidateIdx = bestCandidateIdx;
+    _failsafeState      = failsafeState;
+
+    // ── FAIL-SAFE PATH ───────────────────────────────────────────────────────
+    // No candidate passed strict validation.
+    // Show state-aware panel and preserve original text.
     if (usedOriginal) {
-      $('improverFailsafe').classList.remove('hidden');
+      renderFailsafePanel(failsafeState, ranking);
       $('improverFailsafe').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      setStatus('done', 'Tidak ada perbaikan terukur');
-      showToast('Tidak ada revisi yang terbukti lebih baik. Teks asli dipertahankan.', 'info');
+      const msg = failsafeState === 'mixed'
+        ? 'Tidak ada revisi yang sepenuhnya tervalidasi. Periksa kandidat terbaik.'
+        : 'Tidak ada revisi yang terbukti lebih baik. Teks asli dipertahankan.';
+      setStatus('done', failsafeState === 'mixed' ? 'Hasil campuran' : 'Tidak ada perbaikan terukur');
+      showToast(msg, 'info');
       return;
     }
 
-    // ── SUCCESS PATH ─────────────────────────────────────────
-    // A candidate passed validation — display the improvement.
+    // ── SUCCESS PATH ─────────────────────────────────────────────────────────
+    // At least one candidate passed validation.
 
-    // Analyze the improved text — independent recalculation, not reuse
-    const improvedAnalysis = analyzeText(improvedText);
+    // The improvedText is already the best validated candidate text from the engine.
+    // The analysis is stored in allCandidates — re-use it to avoid double calculation.
+    const bestCand       = allCandidates[bestCandidateIdx];
+    const improvedAnalysis = bestCand.analysis;
 
-    // Store for "Perbaiki Lagi"
     _lastImprovedText     = improvedText;
     _lastImprovedAnalysis = improvedAnalysis;
 
-    // Populate text panels
-    $('originalTextPanel').textContent = origAnalysis.text;
-    $('compareOrigPanel').textContent  = origAnalysis.text;
-    $('improvedTextPanel').textContent = improvedText;
-    $('compareImpPanel').textContent   = improvedText;
+    // Resolve document objects and store for panel re-rendering
+    const origDocForPanel = result.origDocument || _origDocument || parseDocument(origAnalysis.text);
+    const impDocForPanel  = bestCand.document   || parseDocument(improvedText);
+    _origDocument     = origDocForPanel;
+    _improvedDocument = impDocForPanel;
+
+    // ── Structure validation microcopy ─────────────────────
+    const structCheck = validateDocumentStructure(origDocForPanel, impDocForPanel);
+    const structStatus = $('structureStatus');
+    if (structStatus) {
+      structStatus.textContent  = structCheck.message;
+      structStatus.className    = 'structure-status ' + (structCheck.ok ? 'ok' : 'warn');
+      structStatus.style.display = '';
+    }
+
+    // Populate text panels with structured rendering
+    renderPanel(origDocForPanel, $('originalTextPanel'));
+    renderPanel(origDocForPanel, $('compareOrigPanel'));
+    renderPanel(impDocForPanel,  $('improvedTextPanel'));
+    renderPanel(impDocForPanel,  $('compareImpPanel'));
 
     // Show panels, default to "Hasil Perbaikan" tab
     $('improverPanels').classList.remove('hidden');
@@ -2656,7 +4007,7 @@ async function runImproverPass(inputText, origAnalysis, isSecondPass) {
     // Evaluasi card — honest before/after scoring
     renderEvaluasi(origAnalysis, improvedAnalysis);
 
-    // Change log — changeMade is already a human-readable string[] from v3 engine
+    // Change log
     renderChangeLog(changeMade);
 
     // Comparison section
@@ -2665,18 +4016,19 @@ async function runImproverPass(inputText, origAnalysis, isSecondPass) {
     renderComparisonCharts(origAnalysis, improvedAnalysis);
     $('comparisonCard').classList.remove('hidden');
 
-    // Persist improvement data to history
+    // Persist to history — include all 3 candidates
     if (currentAnalysis) {
       updateHistoryWithImprovement(currentAnalysis.timestamp, {
         improvedText,
         improvedAnalysis,
         changeMade,
+        allCandidates,
+        chosenCandidateIdx: bestCandidateIdx,
+        failsafeState,
       });
     }
 
-    // Show "Perbaiki Lagi" only after the first pass
     showImproveAgainBtn(!isSecondPass);
-
     setStatus('done', 'Selesai');
     showToast(isSecondPass ? 'Perbaikan tahap 2 selesai!' : 'Perbaikan tulisan selesai!', 'success');
     $('evaluasiCard').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -2699,6 +4051,8 @@ async function runImprover() {
     showToast('Analisis teks dulu sebelum menggunakan Writing Improver.', 'error');
     return;
   }
+  // Seed _origDocument from current analysis text on every fresh run
+  _origDocument = parseDocument(currentAnalysis.text);
   await runImproverPass(currentAnalysis.text, currentAnalysis, false);
 }
 
@@ -2723,9 +4077,18 @@ function resetImprover() {
   $('comparisonCard').classList.add('hidden');
   $('evaluasiCard').classList.add('hidden');
   $('improverFailsafe').classList.add('hidden');
+  $('candidatePreviewCard').classList.add('hidden');
   showImproveAgainBtn(false);
   _lastImprovedText     = null;
   _lastImprovedAnalysis = null;
+  _allCandidates        = null;
+  _origAnalysisForCmp   = null;
+  _chosenCandidateIdx   = 0;
+  _failsafeState        = null;
+  _origDocument         = null;
+  _improvedDocument     = null;
+  const structStatus = $('structureStatus');
+  if (structStatus) structStatus.style.display = 'none';
 
   document.querySelectorAll('#writingGoalGroup .btn-toggle').forEach(b => {
     b.classList.toggle('active', b.dataset.value === 'academic');
@@ -2740,6 +4103,289 @@ function resetImprover() {
 }
 
 /* ============================================================
+
+/* ============================================================
+   MODULE: EDITOR MODE
+   Manual suggestion-by-suggestion interface.
+   The user sees: Problem → Suggestion → Reason → [Terapkan] / [Lewati]
+   ============================================================ */
+
+/** State for the Editor Mode */
+const _editorState = {
+  suggestions: [],  // Array<{id, type, typeCls, label, problem, suggestion, reason, count, action, word?}>
+  decisions:   {},  // id → 'applied' | 'skipped'
+};
+
+/**
+ * Build editor suggestions from the writing diagnosis.
+ * Each suggestion targets a specific named problem with a concrete action.
+ */
+function buildEditorSuggestions(sentences, wordFreq) {
+  const totalWords = Object.values(wordFreq).reduce((a,b)=>a+b,0);
+  const suggestions = [];
+
+  // ── Transition overuse ───────────────────────────────────────────────────
+  const transitionCounts = {};
+  sentences.forEach(s => {
+    const s_lc = s.toLowerCase().trim();
+    TRANSITION_PATTERNS.forEach(tp => {
+      if (tp.re.test(s_lc)) transitionCounts[tp.label] = (transitionCounts[tp.label]||0) + 1;
+    });
+  });
+  Object.entries(transitionCounts).forEach(([label, count]) => {
+    if (count >= 2) {
+      const alts = `hapus ${Math.max(1,count-1)} penggunaan yang tidak esensial`;
+      suggestions.push({
+        id: `trans_${label.replace(/\s/g,'_')}`,
+        type: 'transition', typeCls: 'sug-type-transition', label: 'Transisi Berulang',
+        problem:    `"${label}" muncul ${count} kali sebagai pembuka kalimat.`,
+        suggestion: `${alts.charAt(0).toUpperCase()+alts.slice(1)}. Hubungan antar ide sering lebih kuat tanpa penanda transisi yang eksplisit.`,
+        reason:     'Transisi berulang membuat tulisan terdengar mekanik. Teks akademik yang baik mengalir secara logis tanpa penanda koneksi di setiap kalimat.',
+        count, action: 'remove_transition', word: label,
+      });
+    }
+  });
+
+  // ── Repeated sentence openings ───────────────────────────────────────────
+  const openingFreq = {};
+  sentences.forEach(s => {
+    const fw = s.trim().split(/\s+/)[0]?.toLowerCase() || '';
+    if (fw && !STOP_WORDS.has(fw)) openingFreq[fw] = (openingFreq[fw]||0) + 1;
+  });
+  Object.entries(openingFreq).forEach(([word, count]) => {
+    if (count >= 3) {
+      suggestions.push({
+        id: `opening_${word}`,
+        type: 'opening', typeCls: 'sug-type-opening', label: 'Pembuka Berulang',
+        problem:    `Kata pembuka "${word}" digunakan ${count} kali untuk memulai kalimat.`,
+        suggestion: `Variasikan ${count-1} penggunaan selanjutnya — mulai dari klausa yang berbeda, atau susun ulang subjek-predikat.`,
+        reason:     'Pembuka yang seragam menciptakan pola mekanik. Variasi pembuka mencerminkan keberagaman ekspresi.',
+        count, action: 'change_opening', word,
+      });
+    }
+  });
+
+  // ── Overused non-technical words ─────────────────────────────────────────
+  Object.entries(wordFreq).forEach(([word, count]) => {
+    if (STOP_WORDS.has(word) || word.length <= 3 || !SYNONYM_MAP[word]) return;
+    const rate = count / Math.max(1,totalWords) * 100;
+    if (rate >= 2.5 && count >= 4) {
+      const alts = SYNONYM_MAP[word].slice(0,2).join(', ');
+      suggestions.push({
+        id: `word_${word}`,
+        type: 'repetition', typeCls: 'sug-type-repetition', label: 'Kata Berulang',
+        problem:    `Kata "${word}" muncul ${count} kali (${rate.toFixed(1)}% dari teks).`,
+        suggestion: `Kurangi sekitar setengah penggunaan dengan sinonim seperti "${alts}", atau susun ulang kalimat agar kata tidak diperlukan.`,
+        reason:     'Pengulangan kata non-teknis yang berlebihan mengurangi kekayaan kosakata dan menciptakan pola yang terasa seragam.',
+        count, action: 'reduce_word', word,
+      });
+    }
+  });
+
+  // ── Very long sentences ──────────────────────────────────────────────────
+  const lengths = sentences.map(s => s.split(/\s+/).filter(w=>w).length);
+  const longIdx = lengths.reduce((acc,l,i) => { if (l>35) acc.push(i); return acc; }, []);
+  if (longIdx.length >= 2) {
+    suggestions.push({
+      id: 'long_sentences',
+      type: 'length', typeCls: 'sug-type-length', label: 'Kalimat Terlalu Panjang',
+      problem:    `${longIdx.length} kalimat memiliki lebih dari 35 kata.`,
+      suggestion: `Pecah kalimat-kalimat tersebut di titik konjungsi (namun, karena, sehingga) atau di koma tengah.`,
+      reason:     'Kalimat sangat panjang sulit diikuti dan sering memuat beberapa argumen yang lebih baik dipisahkan.',
+      count: longIdx.length, action: 'split_sentences', indices: longIdx,
+    });
+  }
+
+  return suggestions;
+}
+
+/**
+ * Render the editor suggestion cards.
+ */
+function renderEditorSuggestions(suggestions) {
+  const container = $('editorSuggestionsList');
+  if (!container) return;
+
+  if (suggestions.length === 0) {
+    container.innerHTML = `<div class="empty-state" style="padding:1rem 0;">
+      <div class="empty-icon">✓</div>
+      <p>Tidak ada masalah signifikan yang terdeteksi.</p>
+    </div>`;
+    const footer = $('editorModeFooter');
+    if (footer) footer.classList.add('hidden');
+    return;
+  }
+
+  container.innerHTML = suggestions.map(sug => `
+    <div class="editor-suggestion" id="esug-${sug.id}" data-sug-id="${sug.id}">
+      <div class="editor-sug-header">
+        <div>
+          <span class="editor-sug-type ${sug.typeCls}">${sug.label}</span>
+          <p class="editor-sug-problem">${escapeHtml(sug.problem)}</p>
+        </div>
+        <span class="editor-sug-count">${sug.count}×</span>
+      </div>
+      <p class="editor-sug-reason"><em>Saran:</em> ${escapeHtml(sug.suggestion)}</p>
+      <p class="editor-sug-reason"><em>Alasan:</em> ${escapeHtml(sug.reason)}</p>
+      <div class="editor-sug-actions">
+        <button class="btn btn-primary btn-sm" data-action="apply" data-sug-id="${sug.id}">Terapkan</button>
+        <button class="btn btn-ghost btn-sm"   data-action="skip"  data-sug-id="${sug.id}">Lewati</button>
+      </div>
+    </div>`).join('');
+
+  const footer = $('editorModeFooter');
+  if (footer) footer.classList.remove('hidden');
+  updateEditorAppliedCount();
+}
+
+/** Update the "N saran diterapkan" counter */
+function updateEditorAppliedCount() {
+  const applied = Object.values(_editorState.decisions).filter(d => d === 'applied').length;
+  const el = $('editorAppliedCount');
+  if (el) el.textContent = `${applied} saran diterapkan`;
+}
+
+/** Handle Terapkan / Lewati button click for a suggestion */
+function handleEditorDecision(sugId, decision) {
+  _editorState.decisions[sugId] = decision;
+  const el = $(`esug-${sugId}`);
+  if (!el) return;
+  el.classList.remove('applied','skipped');
+  el.classList.add(decision);
+  el.querySelectorAll('[data-action]').forEach(btn => {
+    btn.disabled = btn.dataset.action === decision;
+    btn.style.opacity = btn.dataset.action === decision ? '0.5' : '';
+  });
+  updateEditorAppliedCount();
+}
+
+/**
+ * Apply only the suggestions marked 'applied' to produce a revised text,
+ * then display the result in the Writing Improver panels.
+ */
+function applyEditorSuggestions(sugIds) {
+  if (!currentAnalysis) return;
+  const sentences = getSentences(currentAnalysis.text);
+  const wordFreq = {};
+  getWords(currentAnalysis.text).forEach(w => { wordFreq[w] = (wordFreq[w]||0)+1; });
+  const transitionCounts = {};
+  sentences.forEach(s => {
+    const s_lc = s.toLowerCase().trim();
+    TRANSITION_PATTERNS.forEach(tp => {
+      if (tp.re.test(s_lc)) transitionCounts[tp.label] = (transitionCounts[tp.label]||0)+1;
+    });
+  });
+
+  const classification = classifySentences(sentences, wordFreq);
+  const lastReplacedAt = {};
+  const openingOccurrences = {};
+  const changeLog = { synonymsReplaced:0, transitionsRemoved:0, openingsVaried:0,
+                      sentencesSplit:0, sentencesCombined:0, keptSentences:0 };
+
+  const activeSugs = _editorState.suggestions.filter(s => sugIds.includes(s.id));
+  const hasTransition = activeSugs.some(s => s.action === 'remove_transition');
+  const wordSugs      = activeSugs.filter(s => s.action === 'reduce_word');
+  const hasSplit      = activeSugs.some(s => s.action === 'split_sentences');
+  const hasOpening    = activeSugs.some(s => s.action === 'change_opening');
+
+  const result = [];
+  let i = 0;
+  while (i < sentences.length) {
+    const cl = classification[i];
+    let s = sentences[i];
+
+    const fw = s.trim().split(/\s+/)[0]?.toLowerCase() || '';
+    if (!STOP_WORDS.has(fw)) openingOccurrences[fw] = (openingOccurrences[fw]||0)+1;
+    const occNum = (openingOccurrences[fw]||1)-1;
+
+    if (hasSplit && cl.issues.includes('too_long')) {
+      const parts = strategySplitSentence(s);
+      if (parts.length > 1) { result.push(...parts); changeLog.sentencesSplit++; i++; continue; }
+    }
+    if (hasTransition && cl.issues.includes('overused_transition')) {
+      const tp = TRANSITION_PATTERNS.find(p => p.re.test(s.toLowerCase().trim()));
+      if (tp) {
+        const sug = activeSugs.find(s2 => s2.word === tp.label && s2.action === 'remove_transition');
+        if (sug) {
+          const rev = strategyRemoveTransition(s, tp.label);
+          if (rev !== s) { s = rev; changeLog.transitionsRemoved++; }
+        }
+      }
+    }
+    if (hasOpening && cl.issues.includes('repeated_opening') && occNum >= 1) {
+      const rev = strategyChangeOpening(s, occNum);
+      if (rev !== s) { s = rev; changeLog.openingsVaried++; }
+    }
+    if (wordSugs.length > 0) {
+      const rev = strategyReduceRedundancy(s, wordFreq, lastReplacedAt, i, 3, 2);
+      if (rev !== s) { s = rev; changeLog.synonymsReplaced++; }
+    }
+
+    result.push(s);
+    i++;
+  }
+
+  const revisedText     = result.join(' ');
+  const revisedAnalysis = analyzeText(revisedText);
+
+  // Use structured rendering for editor-mode results
+  const origDoc = _origDocument || parseDocument(currentAnalysis.text);
+  const revDoc  = parseDocument(revisedText);
+  _origDocument     = origDoc;
+  _improvedDocument = revDoc;
+
+  renderPanel(origDoc, $('originalTextPanel'));
+  renderPanel(origDoc, $('compareOrigPanel'));
+  renderPanel(revDoc,  $('improvedTextPanel'));
+  renderPanel(revDoc,  $('compareImpPanel'));
+
+  $('editorModePanel').classList.add('hidden');
+  $('improverPanels').classList.remove('hidden');
+  document.querySelectorAll('.view-tab').forEach(t => {
+    t.classList.remove('active'); t.setAttribute('aria-selected','false');
+  });
+  const impTab = document.querySelector('.view-tab[data-view="improved"]');
+  if (impTab) { impTab.classList.add('active'); impTab.setAttribute('aria-selected','true'); }
+  ['view-original','view-improved','view-compare'].forEach(id => {
+    const el = $(id);
+    if (el) el.classList.toggle('hidden', id !== 'view-improved');
+  });
+
+  renderEvaluasi(currentAnalysis, revisedAnalysis);
+  renderChangeLog(buildChangeMade({ changeLog }));
+  const compareRows = compareTexts(currentAnalysis, revisedAnalysis);
+  renderComparisonTable(compareRows);
+  renderComparisonCharts(currentAnalysis, revisedAnalysis);
+  $('comparisonCard').classList.remove('hidden');
+
+  _lastImprovedText     = revisedText;
+  _lastImprovedAnalysis = revisedAnalysis;
+  showImproveAgainBtn(true);
+  setStatus('done','Selesai');
+  showToast('Saran editor diterapkan.','success');
+  $('evaluasiCard').scrollIntoView({ behavior:'smooth', block:'nearest' });
+}
+
+/** Open Editor Mode — run diagnosis and render suggestion list */
+function openEditorMode() {
+  if (!currentAnalysis) {
+    showToast('Analisis teks dulu sebelum menggunakan Mode Editor.', 'error');
+    return;
+  }
+  const sentences = getSentences(currentAnalysis.text);
+  const wordFreq  = {};
+  getWords(currentAnalysis.text).forEach(w => { wordFreq[w] = (wordFreq[w]||0)+1; });
+
+  _editorState.suggestions = buildEditorSuggestions(sentences, wordFreq);
+  _editorState.decisions   = {};
+
+  renderEditorSuggestions(_editorState.suggestions);
+  $('editorModePanel').classList.remove('hidden');
+  $('editorModePanel').scrollIntoView({ behavior:'smooth', block:'nearest' });
+}
+
+
+/* ============================================================
    INIT EXTENSION — all new feature event handlers
    ============================================================ */
 document.addEventListener('DOMContentLoaded', () => {
@@ -2752,18 +4398,76 @@ document.addEventListener('DOMContentLoaded', () => {
   $('improveAgainBtn')?.addEventListener('click', runImproverAgain);
   $('improveResetBtn')?.addEventListener('click', resetImprover);
 
+  // Format toggle (Document View / Plain Text View)
+  document.querySelectorAll('.format-toggle-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.format-toggle-btn').forEach(b => {
+        b.classList.remove('active');
+        b.setAttribute('aria-pressed', 'false');
+      });
+      btn.classList.add('active');
+      btn.setAttribute('aria-pressed', 'true');
+      applyFormatMode(btn.dataset.format);
+    });
+  });
+
+  // Editor Mode
+  $('editorModeBtn')?.addEventListener('click', openEditorMode);
+  $('editorModeClose')?.addEventListener('click', () => {
+    $('editorModePanel').classList.add('hidden');
+  });
+
+  // Editor suggestion decisions (event delegation on the suggestions list)
+  $('editorSuggestionsList')?.addEventListener('click', e => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const sugId  = btn.dataset.sugId;
+    if (action === 'apply' || action === 'skip') {
+      handleEditorDecision(sugId, action === 'apply' ? 'applied' : 'skipped');
+    }
+  });
+
+  // "Terapkan Semua" — applies all un-skipped suggestions
+  $('editorApplyAllBtn')?.addEventListener('click', () => {
+    const ids = _editorState.suggestions.map(s => s.id);
+    // Mark all not-yet-decided as applied
+    ids.forEach(id => {
+      if (!_editorState.decisions[id]) handleEditorDecision(id, 'applied');
+    });
+    const appliedIds = Object.entries(_editorState.decisions)
+      .filter(([,v]) => v === 'applied').map(([k]) => k);
+    if (appliedIds.length === 0) {
+      showToast('Tidak ada saran yang diterapkan.', 'error');
+      return;
+    }
+    applyEditorSuggestions(appliedIds);
+  });
+
+  // "Lihat Hasil" — applies only marked suggestions
+  $('editorPreviewBtn')?.addEventListener('click', () => {
+    const appliedIds = Object.entries(_editorState.decisions)
+      .filter(([,v]) => v === 'applied').map(([k]) => k);
+    if (appliedIds.length === 0) {
+      showToast('Tandai setidaknya satu saran sebagai "Terapkan" terlebih dahulu.', 'error');
+      return;
+    }
+    applyEditorSuggestions(appliedIds);
+  });
+
   // Fail-safe panel buttons
   $('failsafeUseOriginal')?.addEventListener('click', () => {
-    // Copy the original analyzed text to the "Hasil Perbaikan" panel so the user
-    // can still use the copy button, and show the panel in original-tab mode.
     if (!currentAnalysis) return;
-    $('originalTextPanel').textContent = currentAnalysis.text;
-    $('improvedTextPanel').textContent = currentAnalysis.text;
-    $('compareOrigPanel').textContent  = currentAnalysis.text;
-    $('compareImpPanel').textContent   = currentAnalysis.text;
+    const origDoc = _origDocument || parseDocument(currentAnalysis.text);
+    _origDocument     = origDoc;
+    _improvedDocument = origDoc;
+    renderPanel(origDoc, $('originalTextPanel'));
+    renderPanel(origDoc, $('improvedTextPanel'));
+    renderPanel(origDoc, $('compareOrigPanel'));
+    renderPanel(origDoc, $('compareImpPanel'));
     $('improverFailsafe').classList.add('hidden');
+    $('candidatePreviewCard').classList.add('hidden');
     $('improverPanels').classList.remove('hidden');
-    // Switch to Original tab so the label is honest
     document.querySelectorAll('.view-tab').forEach(t => {
       t.classList.remove('active'); t.setAttribute('aria-selected', 'false');
     });
@@ -2773,29 +4477,59 @@ document.addEventListener('DOMContentLoaded', () => {
       const el = $(id);
       if (el) el.classList.toggle('hidden', id !== 'view-original');
     });
-    showToast('Teks asli ditampilkan. Salin teks dari panel di bawah.', 'info');
+    showToast('Teks asli ditampilkan.', 'info');
+  });
+
+  $('failsafeViewBest')?.addEventListener('click', () => {
+    if (!_allCandidates || !_origAnalysisForCmp) return;
+    $('improverFailsafe').classList.add('hidden');
+    renderCandidatePreview(_chosenCandidateIdx);
   });
 
   $('failsafeTryManual')?.addEventListener('click', () => {
-    // Scroll back to the input textarea so the user can edit manually
     $('improverFailsafe').classList.add('hidden');
+    $('candidatePreviewCard').classList.add('hidden');
     const ta = $('textInput');
-    if (ta) {
-      ta.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      ta.focus();
-    }
+    if (ta) { ta.scrollIntoView({ behavior: 'smooth', block: 'center' }); ta.focus(); }
     showToast('Edit teks secara manual di area input, lalu analisis kembali.', 'info');
   });
 
-  // Copy improved text
+  // Candidate preview tab buttons (dynamically rendered — use event delegation)
+  document.addEventListener('click', e => {
+    const tab = e.target.closest('.cand-tab');
+    if (tab && _allCandidates) {
+      const idx = parseInt(tab.dataset.candIdx, 10);
+      if (!isNaN(idx)) {
+        _chosenCandidateIdx = idx;
+        renderCandidatePreview(idx);
+      }
+    }
+  });
+
+  // Accept candidate button
+  $('candAcceptBtn')?.addEventListener('click', acceptCandidate);
+
+  // Cancel / close preview (both ✕ button and "Kembali" button)
+  const closeCandPreview = () => {
+    $('candidatePreviewCard').classList.add('hidden');
+    if (_failsafeState && _failsafeState !== 'validated') {
+      renderFailsafePanel(_failsafeState, _allCandidates);
+    }
+  };
+  $('candCancelBtn')?.addEventListener('click',  closeCandPreview);
+  $('candCancelBtn2')?.addEventListener('click', closeCandPreview);
+
+  // Copy improved text — use structured document for proper line-break preservation
   $('copyImprovedBtn')?.addEventListener('click', () => {
-    const text = $('improvedTextPanel')?.textContent;
-    if (!text) { showToast('Belum ada teks yang diperbaiki.', 'error'); return; }
-    navigator.clipboard.writeText(text).then(() => {
+    const copyText = _improvedDocument
+      ? reconstructDocumentText(_improvedDocument)
+      : ($('improvedTextPanel')?.textContent || '');
+    if (!copyText.trim()) { showToast('Belum ada teks yang diperbaiki.', 'error'); return; }
+    navigator.clipboard.writeText(copyText).then(() => {
       showToast('Teks hasil perbaikan berhasil disalin!', 'success');
     }).catch(() => {
       const ta = document.createElement('textarea');
-      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      ta.value = copyText; ta.style.position = 'fixed'; ta.style.opacity = '0';
       document.body.appendChild(ta); ta.select();
       document.execCommand('copy'); document.body.removeChild(ta);
       showToast('Teks berhasil disalin!', 'success');

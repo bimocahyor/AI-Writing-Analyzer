@@ -1033,6 +1033,78 @@ input, textarea, select { font-family: inherit; }
 .evaluasi-status.needs-review { background: rgba(220,38,38,0.1); border: 1px solid rgba(220,38,38,0.25); color: #fca5a5; }
 .evaluasi-status-icon { flex-shrink: 0; font-size: 0.9rem; }
 
+/* ─── Editor Mode Panel ──────────────────────────────────── */
+.editor-mode-panel {
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 1rem 1.25rem;
+  margin-top: 1rem;
+}
+.editor-mode-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.85rem;
+}
+.editor-mode-title { font-size: 0.9rem; font-weight: 700; color: var(--text-primary); margin-bottom: 0.25rem; }
+.editor-mode-desc  { font-size: 0.8rem; color: var(--text-muted); line-height: 1.5; }
+
+/* Individual suggestion card */
+.editor-suggestion {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 0.8rem 1rem;
+  margin-bottom: 0.6rem;
+  transition: border-color 0.15s;
+}
+.editor-suggestion.applied {
+  border-color: rgba(22,163,74,0.4);
+  background: rgba(22,163,74,0.04);
+}
+.editor-suggestion.skipped {
+  opacity: 0.45;
+  border-style: dashed;
+}
+.editor-sug-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+.editor-sug-type {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 7px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.sug-type-transition { background: rgba(37,99,235,0.12); color: #93c5fd; }
+.sug-type-opening    { background: rgba(212,175,55,0.12); color: var(--accent-gold); }
+.sug-type-repetition { background: rgba(220,38,38,0.1);  color: #fca5a5; }
+.sug-type-length     { background: rgba(100,116,139,0.12); color: var(--text-muted); }
+.editor-sug-problem  { font-size: 0.83rem; color: var(--text-primary); font-weight: 600; margin-bottom: 0.25rem; }
+.editor-sug-reason   { font-size: 0.79rem; color: var(--text-muted); line-height: 1.5; margin-bottom: 0.5rem; }
+.editor-sug-actions  { display: flex; gap: 0.5rem; }
+.editor-sug-count    { font-size: 0.72rem; color: var(--text-muted); padding-top: 4px; }
+
+/* Footer */
+.editor-mode-footer {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding-top: 0.75rem;
+  margin-top: 0.5rem;
+  border-top: 1px solid var(--border-light);
+}
+.editor-mode-applied { font-size: 0.82rem; color: var(--accent-green); font-weight: 600; }
+
 /* ─── Improver Fail-safe Panel ───────────────────────────── */
 .improver-failsafe {
   display: flex;
@@ -1044,6 +1116,13 @@ input, textarea, select { font-family: inherit; }
   padding: 1rem 1.25rem;
   margin-top: 1rem;
 }
+/* STATE B: mixed — use blue tint to indicate partial progress */
+.improver-failsafe.mixed {
+  background: rgba(37,99,235,0.07);
+  border-color: rgba(37,99,235,0.25);
+}
+.improver-failsafe.mixed .failsafe-icon { color: var(--accent-blue); }
+.improver-failsafe.mixed .failsafe-title { color: var(--accent-blue); }
 .failsafe-icon {
   font-size: 1.3rem;
   line-height: 1;
@@ -1068,6 +1147,177 @@ input, textarea, select { font-family: inherit; }
   display: flex;
   gap: 0.6rem;
   flex-wrap: wrap;
+  align-items: center;
+}
+/* "Lihat Kandidat Terbaik" is the primary action in the fail-safe panel */
+#failsafeViewBest { order: -1; }
+.failsafe-manual { opacity: 0.75; }
+
+/* ─── Candidate Preview Card ─────────────────────────────── */
+.candidate-preview-card { margin-top: 1rem; }
+
+.cand-preview-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+.cand-close-btn { margin-top: 0.2rem; flex-shrink: 0; }
+
+/* Candidate selector tabs */
+.cand-tabs {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--border-light);
+  padding-bottom: 0.75rem;
+}
+.cand-tab {
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border-light);
+  color: var(--text-secondary);
+  border-radius: var(--radius);
+  padding: 0.35rem 0.9rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.cand-tab:hover { background: rgba(37,99,235,0.08); color: var(--text-primary); }
+.cand-tab.active {
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: #fff;
+}
+
+/* Score summary strip */
+.cand-score-summary {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 0.85rem 1.25rem;
+  margin-bottom: 1rem;
+}
+.cand-score-block { text-align: center; min-width: 100px; }
+.cand-score-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); margin-bottom: 0.2rem; }
+.cand-score-val { font-size: 1.5rem; font-weight: 800; color: var(--text-primary); line-height: 1; margin-bottom: 0.2rem; }
+.cand-score-sub { font-size: 0.74rem; color: var(--text-muted); }
+.cand-score-arrow { font-size: 1.3rem; color: var(--text-muted); flex-shrink: 0; }
+.cand-delta-up   { color: var(--accent-red); }
+.cand-delta-down { color: var(--accent-green); }
+.cand-delta-same { color: var(--text-muted); }
+
+/* Experimental warning */
+.cand-experimental-warn {
+  background: rgba(220,38,38,0.07);
+  border: 1px solid rgba(220,38,38,0.25);
+  border-radius: var(--radius);
+  padding: 0.65rem 1rem;
+  font-size: 0.82rem;
+  color: #fca5a5;
+  margin-bottom: 1rem;
+  line-height: 1.5;
+}
+
+/* Two-column text layout */
+.cand-text-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+.cand-text-panel { min-height: 160px; max-height: 280px; overflow-y: auto; }
+@media (max-width: 700px) {
+  .cand-text-columns { grid-template-columns: 1fr; }
+}
+
+/* Section titles inside preview card */
+.cand-section-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin: 1.25rem 0 0.6rem;
+}
+.cand-index-note {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  opacity: 0.8;
+}
+
+/* Why block */
+.cand-why-card {
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 0.9rem 1.1rem;
+}
+.cand-why-intro {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin-bottom: 0.5rem;
+  font-style: italic;
+}
+.cand-why-list {
+  list-style: none;
+  padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 0.3rem;
+}
+.cand-why-list li {
+  font-size: 0.84rem;
+  color: var(--text-secondary);
+  padding-left: 1.1rem;
+  position: relative;
+}
+.cand-why-list li::before { content: '✓'; position: absolute; left: 0; color: var(--accent-green); font-weight: 700; }
+
+/* Ranking table enhancements */
+.cand-ranking-table tr[data-cand] { cursor: pointer; }
+.cand-ranking-table tr[data-cand]:hover td { background: rgba(37,99,235,0.06); }
+.cand-row-active td { background: rgba(37,99,235,0.1) !important; }
+.cand-num-cell { font-weight: 600; color: var(--text-primary); white-space: nowrap; }
+.cand-qi-cell  { font-weight: 700; color: var(--accent-gold); }
+.cand-qi-cell small { color: var(--text-muted); font-weight: 400; }
+.cand-qual-label {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.cand-label-best   { background: rgba(212,175,55,0.15); color: var(--accent-gold); }
+.cand-label-ok     { background: rgba(37,99,235,0.12);  color: #93c5fd; }
+.cand-label-review { background: rgba(100,116,139,0.12); color: var(--text-muted); }
+.cand-badge-pass   { font-size: 0.75rem; color: var(--accent-green); font-weight: 600; }
+.cand-badge-fail   { font-size: 0.75rem; color: var(--text-muted); }
+
+/* Accept button when candidate is experimental */
+.cand-accept-experimental {
+  border-color: rgba(220,38,38,0.4) !important;
+  color: #fca5a5 !important;
+}
+.cand-accept-experimental:hover {
+  background: rgba(220,38,38,0.1) !important;
+}
+
+/* Preview action row */
+.cand-preview-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-light);
 }
 
 /* ─── History Filter Bar ─────────────────────────────────── */
@@ -1203,3 +1453,215 @@ input, textarea, select { font-family: inherit; }
 .confirm-dialog h3 { font-size: 1rem; margin-bottom: 0.5rem; }
 .confirm-dialog p  { font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1.25rem; }
 .confirm-actions { display: flex; gap: 0.6rem; justify-content: center; }
+
+/* ============================================================
+   DOCUMENT STRUCTURE RENDERING — doc-block types
+   ============================================================ */
+
+/* Remove pre-wrap from text panels in document view mode
+   (blocks are now rendered as semantic HTML, not raw text) */
+.text-panel {
+  white-space: normal; /* overrides previous pre-wrap */
+}
+
+/* ── Document block base ──────────────────────────────────── */
+.doc-block {
+  margin-bottom: 0;
+  line-height: 1.8;
+}
+
+/* ── Title block ──────────────────────────────────────────── */
+.doc-title {
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+  margin-bottom: 0.2rem;
+  line-height: 1.35;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+/* ── Author block ─────────────────────────────────────────── */
+.doc-author {
+  font-size: 0.84rem;
+  color: var(--accent-gold);
+  font-style: italic;
+  margin-bottom: 0.75rem;
+}
+
+/* ── Heading block ────────────────────────────────────────── */
+.doc-heading {
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-top: 1rem;
+  margin-bottom: 0.25rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border-color);
+}
+
+/* ── Paragraph block ──────────────────────────────────────── */
+.doc-paragraph {
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+  line-height: 1.85;
+  margin-bottom: 0.85rem;
+  text-align: justify;
+  text-justify: inter-word;
+}
+.doc-paragraph:last-of-type {
+  margin-bottom: 0;
+}
+
+/* ── Quotation block ──────────────────────────────────────── */
+.doc-quotation {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  border-left: 3px solid var(--accent-blue);
+  padding: 0.4rem 0.75rem;
+  margin: 0.6rem 0;
+  font-style: italic;
+  background: rgba(37,99,235,0.05);
+  border-radius: 0 4px 4px 0;
+}
+
+/* ── Bullet / numbered list blocks ───────────────────────── */
+.doc-bullet,
+.doc-numbered {
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+  padding-left: 1rem;
+  margin-bottom: 0.2rem;
+}
+
+/* ── Citation block ───────────────────────────────────────── */
+.doc-citation {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-top: 0.1rem;
+  margin-bottom: 0.1rem;
+}
+
+/* ── Separator line ───────────────────────────────────────── */
+.doc-separator {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 0.75rem 0;
+}
+
+/* ── Empty line spacer ────────────────────────────────────── */
+.doc-spacer {
+  height: 0.55rem;
+}
+
+/* ── Plain-text mode pre block ────────────────────────────── */
+.doc-plaintext {
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+  line-height: 1.8;
+  margin: 0;
+  word-break: break-word;
+}
+
+/* ============================================================
+   FORMAT TOGGLE — Document View / Plain Text View
+   ============================================================ */
+
+.improver-panels-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.format-toggle {
+  display: flex;
+  gap: 3px;
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 3px;
+}
+
+.format-toggle-btn {
+  font-size: 0.77rem;
+  font-weight: 600;
+  padding: 0.3rem 0.75rem;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition);
+  font-family: inherit;
+  white-space: nowrap;
+}
+.format-toggle-btn:hover { color: var(--text-primary); background: var(--border-color); }
+.format-toggle-btn.active {
+  background: var(--accent-blue);
+  color: #fff;
+}
+.format-toggle-btn:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
+
+/* ============================================================
+   STRUCTURE STATUS MICROCOPY
+   ============================================================ */
+
+.structure-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.45rem 0.85rem;
+  border-radius: var(--radius);
+  margin-bottom: 0.75rem;
+}
+.structure-status::before {
+  content: '◉';
+  font-size: 0.65rem;
+}
+.structure-status.ok {
+  background: rgba(22,163,74,0.08);
+  border: 1px solid rgba(22,163,74,0.25);
+  color: #86efac;
+}
+.structure-status.ok::before { content: '✓'; color: var(--accent-green); }
+.structure-status.warn {
+  background: rgba(234,179,8,0.08);
+  border: 1px solid rgba(234,179,8,0.25);
+  color: #fde047;
+}
+.structure-status.warn::before { content: '⚠'; color: #fde047; }
+
+/* Ensure view-tabs doesn't have bottom margin when inside toolbar */
+.improver-panels-toolbar .view-tabs {
+  margin-bottom: 0;
+}
+
+/* ============================================================
+   TEXT PANEL — improved readability for long documents
+   ============================================================ */
+
+/* Increase max-height and improve readability */
+.text-panel {
+  max-height: 500px;
+  line-height: 1.8;
+  padding: 1.25rem 1.4rem;
+}
+
+/* Candidate panels slightly smaller */
+.cand-text-panel {
+  max-height: 320px;
+}
+
+@media (max-width: 768px) {
+  .improver-panels-toolbar { flex-direction: column; align-items: flex-start; }
+  .format-toggle { align-self: flex-end; }
+}

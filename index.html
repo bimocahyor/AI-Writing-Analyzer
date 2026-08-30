@@ -266,9 +266,25 @@
                 </div>
               </div>
               <div class="improver-actions">
-                <button class="btn btn-primary btn-improver" id="improveBtn">✦ Perbaiki Tulisan</button>
+                <button class="btn btn-primary btn-improver" id="improveBtn">✦ Perbaiki Otomatis</button>
+                <button class="btn btn-ghost" id="editorModeBtn">✎ Mode Editor</button>
                 <button class="btn btn-ghost" id="improveAgainBtn" style="display:none;">↺ Perbaiki Lagi</button>
                 <button class="btn btn-ghost" id="improveResetBtn">Reset</button>
+              </div>
+            </div>
+
+            <!-- Editor Mode Panel — shown instead of auto-improvement -->
+            <div class="editor-mode-panel hidden" id="editorModePanel" role="region" aria-label="Mode Editor">
+              <div class="editor-mode-header">
+                <h4 class="editor-mode-title">✎ Mode Editor — Kontrol Manual</h4>
+                <p class="editor-mode-desc">Sistem mendeteksi masalah tulisan dan memberikan saran. Anda memutuskan perubahan mana yang diterapkan.</p>
+                <button class="btn btn-ghost btn-sm" id="editorModeClose">Tutup</button>
+              </div>
+              <div id="editorSuggestionsList" aria-live="polite"></div>
+              <div class="editor-mode-footer hidden" id="editorModeFooter">
+                <span class="editor-mode-applied" id="editorAppliedCount">0 saran diterapkan</span>
+                <button class="btn btn-primary btn-sm" id="editorApplyAllBtn">Terapkan Semua</button>
+                <button class="btn btn-ghost btn-sm" id="editorPreviewBtn">Lihat Hasil</button>
               </div>
             </div>
 
@@ -284,11 +300,20 @@
             <!-- Text Comparison Panels -->
             <div class="improver-panels hidden" id="improverPanels">
 
-              <!-- View Mode Tabs -->
-              <div class="view-tabs" role="tablist" aria-label="Mode tampilan">
-                <button class="view-tab active" data-view="original" role="tab" aria-selected="true">Asli</button>
-                <button class="view-tab" data-view="improved" role="tab" aria-selected="false">Hasil Perbaikan</button>
-                <button class="view-tab" data-view="compare" role="tab" aria-selected="false">Perbandingan</button>
+              <!-- Structure Status Microcopy -->
+              <div class="structure-status ok" id="structureStatus" style="display:none;"></div>
+
+              <!-- View Mode Tabs + Format Toggle -->
+              <div class="improver-panels-toolbar">
+                <div class="view-tabs" role="tablist" aria-label="Mode tampilan">
+                  <button class="view-tab active" data-view="original" role="tab" aria-selected="true">Asli</button>
+                  <button class="view-tab" data-view="improved" role="tab" aria-selected="false">Hasil Perbaikan</button>
+                  <button class="view-tab" data-view="compare" role="tab" aria-selected="false">Perbandingan</button>
+                </div>
+                <div class="format-toggle" role="group" aria-label="Mode tampilan dokumen">
+                  <button class="format-toggle-btn active" data-format="document" aria-pressed="true">⊞ Dokumen</button>
+                  <button class="format-toggle-btn" data-format="plaintext" aria-pressed="false">⊟ Teks Biasa</button>
+                </div>
               </div>
 
               <!-- Original -->
@@ -329,15 +354,20 @@
               <div class="evaluasi-status" id="evaluasiStatus"></div>
             </div>
 
-            <!-- Fail-safe: shown when no candidate passed validation -->
-            <div class="improver-failsafe hidden" id="improverFailsafe" role="status">
+            <!-- Fail-safe: shown when no candidate passed strict validation -->
+            <!-- State is toggled by renderFailsafePanel() in script.js       -->
+            <div class="improver-failsafe hidden" id="improverFailsafe" role="status" aria-live="polite">
               <div class="failsafe-icon">⚠</div>
               <div class="failsafe-body">
-                <p class="failsafe-title">Tidak Ada Revisi yang Lebih Baik Ditemukan</p>
-                <p class="failsafe-desc">Ketiga kandidat revisi otomatis tidak berhasil meningkatkan pola tulisan secara terukur. Teks asli dipertahankan untuk menjaga makna dan kualitas tulisan.</p>
-                <div class="failsafe-actions">
+                <p class="failsafe-title" id="failsafeTitle">Tidak Ada Revisi yang Lebih Baik Ditemukan</p>
+                <p class="failsafe-desc" id="failsafeDesc">Ketiga kandidat revisi otomatis tidak berhasil meningkatkan pola tulisan secara terukur. Teks asli dipertahankan untuk menjaga makna dan kualitas tulisan.</p>
+                <div class="failsafe-actions" id="failsafeActions">
+                  <!-- Priority 1: primary action -->
                   <button class="btn btn-ghost btn-sm" id="failsafeUseOriginal">Gunakan Teks Asli</button>
-                  <button class="btn btn-ghost btn-sm" id="failsafeTryManual">Coba Perbaikan Manual</button>
+                  <!-- Priority 2: inspect best candidate -->
+                  <button class="btn btn-primary btn-sm" id="failsafeViewBest">Lihat Kandidat Terbaik</button>
+                  <!-- Priority 3: manual editing -->
+                  <button class="btn btn-ghost btn-sm failsafe-manual" id="failsafeTryManual">Coba Perbaikan Manual</button>
                 </div>
               </div>
             </div>
@@ -346,6 +376,94 @@
             <div class="change-log hidden" id="changeLog">
               <h4 class="change-log-title">Apa yang Diperbaiki?</h4>
               <div id="changeLogList"></div>
+            </div>
+
+            <!-- ══════════════════════════════════════════════════════
+                 CANDIDATE PREVIEW CARD
+                 Shown when user clicks "Lihat Kandidat Terbaik".
+                 All data comes from _allCandidates (no regeneration).
+                 ══════════════════════════════════════════════════════ -->
+            <div class="card candidate-preview-card hidden" id="candidatePreviewCard">
+              <div class="cand-preview-header">
+                <div>
+                  <div class="section-badge gold">Kandidat Revisi</div>
+                  <h3 class="card-title">Kandidat Revisi Terbaik</h3>
+                  <p class="card-subtitle">Hasil terbaik dari 3 percobaan berdasarkan evaluasi pola tulisan. Pilih kandidat untuk membandingkan, lalu putuskan apakah akan digunakan.</p>
+                </div>
+                <button class="btn btn-ghost btn-sm cand-close-btn" id="candCancelBtn" aria-label="Tutup preview kandidat">✕ Tutup</button>
+              </div>
+
+              <!-- Candidate selector tabs -->
+              <div class="cand-tabs" role="tablist" aria-label="Pilih kandidat">
+                <button class="cand-tab active" data-cand-idx="0" role="tab" aria-selected="true">Kandidat 1</button>
+                <button class="cand-tab" data-cand-idx="1" role="tab" aria-selected="false">Kandidat 2</button>
+                <button class="cand-tab" data-cand-idx="2" role="tab" aria-selected="false">Kandidat 3</button>
+              </div>
+
+              <!-- Score summary strip -->
+              <div class="cand-score-summary" id="candScoreSummary" aria-label="Perbandingan skor"></div>
+
+              <!-- Experimental warning (hidden when candidate is validated) -->
+              <div class="cand-experimental-warn hidden" id="candExperimentalWarn" role="alert">
+                <strong>⚠ Kandidat Eksperimental</strong> — Kandidat ini tidak dinilai lebih baik dari teks asli berdasarkan metrik sistem. Gunakan hanya untuk perbandingan, bukan sebagai pengganti teks asli.
+              </div>
+
+              <!-- Two-column text comparison -->
+              <div class="cand-text-columns">
+                <div class="cand-text-col">
+                  <div class="panel-label">Teks Asli</div>
+                  <div class="text-panel cand-text-panel" id="candOrigText"></div>
+                </div>
+                <div class="cand-text-col">
+                  <div class="panel-label panel-label-gold" id="candImpLabel">Teks Kandidat</div>
+                  <div class="text-panel cand-text-panel" id="candImpText"></div>
+                </div>
+              </div>
+
+              <!-- Metric comparison table -->
+              <div class="cand-section-title">Perbandingan Metrik</div>
+              <div class="comparison-table-wrapper">
+                <table class="comparison-table">
+                  <thead>
+                    <tr>
+                      <th>Metrik</th>
+                      <th>Teks Asli</th>
+                      <th>Kandidat</th>
+                      <th>Perubahan</th>
+                    </tr>
+                  </thead>
+                  <tbody id="candMetricTableBody"></tbody>
+                </table>
+              </div>
+
+              <!-- Why this candidate was selected -->
+              <div class="cand-section-title">Mengapa Kandidat Ini Dipilih?</div>
+              <div class="cand-why-card" id="candWhyBlock"></div>
+
+              <!-- Candidate ranking table (Writing Pattern Quality Index) -->
+              <div class="cand-section-title">
+                Perbandingan Semua Kandidat
+                <span class="cand-index-note">(Writing Pattern Quality Index — hanya untuk membandingkan ketiga kandidat)</span>
+              </div>
+              <div class="comparison-table-wrapper">
+                <table class="comparison-table cand-ranking-table">
+                  <thead>
+                    <tr>
+                      <th>Kandidat</th>
+                      <th>Status</th>
+                      <th>Quality Index</th>
+                      <th>Validasi</th>
+                    </tr>
+                  </thead>
+                  <tbody id="candRankingTableBody"></tbody>
+                </table>
+              </div>
+
+              <!-- Accept / cancel actions -->
+              <div class="cand-preview-actions">
+                <button class="btn btn-primary" id="candAcceptBtn">✓ Gunakan Kandidat Ini</button>
+                <button class="btn btn-ghost" id="candCancelBtn2">Kembali</button>
+              </div>
             </div>
 
             <!-- Disclaimer -->
