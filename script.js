@@ -1950,26 +1950,28 @@ function renderRekomendasi(analysis) {
 }
 
 /* ============================================================
-   MODULE: WRITING IMPROVEMENT ENGINE v4
+   MODULE: WRITING IMPROVEMENT ENGINE v5
    ============================================================
 
-   Architecture: DIAGNOSE → TARGET → REVISE → RECHECK → ACCEPT/REJECT
-   Philosophy:   Minimum necessary intervention. Preserve author voice.
-                 Write quality is the primary objective — not detector scores.
+   Architecture:
+     DIAGNOSE → VOICE PROFILE → TARGETED MICRO-EDIT →
+     SEMANTIC CHECK → STRUCTURAL CHECK → NWQI RECHECK →
+     CANDIDATE RANKING → USER REVIEW
 
-   Key principles:
-   - Every sentence is individually classified (KEEP/REVISE_LIGHT/MODERATE/STRONG)
-   - Revisions only applied where a measurable problem exists
-   - 3 candidates use genuinely different strategies (not just threshold variation)
-   - Semantic preservation is checked: key nouns, numbers, names are never changed
-   - Natural Writing Quality Score is holistic: not just AI risk delta
-   - Transition words are REMOVED when overused, never injected
-   - Sentence combining is allowed only when two very short sentences are clearly related
-   - Opening variation uses clause reordering, not just word stripping
+   Philosophy:
+     Minimum necessary intervention. Preserve author voice.
+     NWQI (Natural Writing Quality Index) is the internal metric.
+     Healthy ranges — not metric extremes — are the target.
+     "The same writer, after thoughtful revision."
 
-   API integration point (future):
-   Replace applySentenceRevision() with a language model call.
-   The classify → validate → rank loop is API-agnostic.
+   Key guardrails:
+   - editNecessityScore gates every sentence: keep if score is low
+   - 35% max edit rate (product guardrail, not scientific law)
+   - authorVoiceProfile protects rhetorical devices, tone, rhythm
+   - NECESSARY repetition (terminology) is never substituted
+   - Transition words are REMOVED when redundant, never injected
+   - Semantic preservation rejects fabricated content automatically
+   - NWQI uses healthy ranges, not direction-of-maximum optimization
    ============================================================ */
 
 /* ──────────────────────────────────────────────────────────────────
@@ -2027,48 +2029,402 @@ const SYNONYM_MAP = {
  * These are classified as filler when they appear too frequently.
  */
 const TRANSITION_PATTERNS = [
-  // Indonesian
-  { re: /^hal ini\b/i,           label: 'hal ini' },
-  { re: /^oleh karena itu[,\s]/i,label: 'oleh karena itu' },
-  { re: /^dengan demikian[,\s]/i,label: 'dengan demikian' },
-  { re: /^selain itu[,\s]/i,     label: 'selain itu' },
-  { re: /^selanjutnya[,\s]/i,    label: 'selanjutnya' },
-  { re: /^pada akhirnya[,\s]/i,  label: 'pada akhirnya' },
-  { re: /^di sisi lain[,\s]/i,   label: 'di sisi lain' },
-  { re: /^lebih lanjut[,\s]/i,   label: 'lebih lanjut' },
-  { re: /^sebagai tambahan[,\s]/i,label: 'sebagai tambahan' },
-  { re: /^dalam hal ini[,\s]/i,  label: 'dalam hal ini' },
-  { re: /^perlu dicatat[,\s]/i,  label: 'perlu dicatat' },
+  // Indonesian — explicit connectors
+  { re: /^hal ini\b/i,                  label: 'hal ini' },
+  { re: /^oleh karena itu[,\s]/i,       label: 'oleh karena itu' },
+  { re: /^dengan demikian[,\s]/i,       label: 'dengan demikian' },
+  { re: /^selain itu[,\s]/i,            label: 'selain itu' },
+  { re: /^selanjutnya[,\s]/i,           label: 'selanjutnya' },
+  { re: /^pada akhirnya[,\s]/i,         label: 'pada akhirnya' },
+  { re: /^di sisi lain[,\s]/i,          label: 'di sisi lain' },
+  { re: /^lebih lanjut[,\s]/i,          label: 'lebih lanjut' },
+  { re: /^sebagai tambahan[,\s]/i,      label: 'sebagai tambahan' },
+  { re: /^dalam hal ini[,\s]/i,         label: 'dalam hal ini' },
+  { re: /^perlu dicatat[,\s]/i,         label: 'perlu dicatat' },
+  { re: /^karena itu[,\s]/i,            label: 'karena itu' },
+  { re: /^di sinilah\b/i,               label: 'di sinilah' },
+  { re: /^namun[,\s]/i,                 label: 'namun' },
+  { re: /^meski demikian[,\s]/i,        label: 'meski demikian' },
+  { re: /^kendati demikian[,\s]/i,      label: 'kendati demikian' },
+  { re: /^bahkan[,\s]/i,                label: 'bahkan' },
+  { re: /^tentu saja[,\s]/i,            label: 'tentu saja' },
+  { re: /^tidak hanya itu[,\s]/i,       label: 'tidak hanya itu' },
   // English
-  { re: /^furthermore[,\s]/i,    label: 'furthermore' },
-  { re: /^additionally[,\s]/i,   label: 'additionally' },
-  { re: /^moreover[,\s]/i,       label: 'moreover' },
-  { re: /^however[,\s]/i,        label: 'however' },
-  { re: /^therefore[,\s]/i,      label: 'therefore' },
-  { re: /^in addition[,\s]/i,    label: 'in addition' },
-  { re: /^as a result[,\s]/i,    label: 'as a result' },
-  { re: /^it is important[,\s]/i,label: 'it is important' },
+  { re: /^furthermore[,\s]/i,           label: 'furthermore' },
+  { re: /^additionally[,\s]/i,          label: 'additionally' },
+  { re: /^moreover[,\s]/i,              label: 'moreover' },
+  { re: /^however[,\s]/i,               label: 'however' },
+  { re: /^therefore[,\s]/i,             label: 'therefore' },
+  { re: /^in addition[,\s]/i,           label: 'in addition' },
+  { re: /^as a result[,\s]/i,           label: 'as a result' },
+  { re: /^it is important[,\s]/i,       label: 'it is important' },
 ];
+
+/* ──────────────────────────────────────────────────────────────────
+   RHETORICAL PATTERNS
+   Patterns that are individually valid but become formulaic when
+   overused. Detected globally per-document.
+   ────────────────────────────────────────────────────────────────── */
+
+/**
+ * Rhetorical patterns to detect for overuse.
+ * Each entry: { re, label, minCount }
+ *   re        — RegExp matching the sentence
+ *   label     — human-readable name
+ *   minCount  — occurrences before it's considered overused
+ */
+const RHETORICAL_PATTERNS = [
+  // Antithesis / contrast constructions
+  { re: /\bbukan\b.{1,60}(tetapi|melainkan|justru)\b/i,   label: 'antithesis_bukan_tetapi', minCount: 2 },
+  { re: /\btidak berarti\b.{1,60}justru\b/i,               label: 'antithesis_tidak_berarti', minCount: 2 },
+  { re: /\btidak hanya\b.{1,60}(tetapi|namun|melainkan)\b/i, label: 'antithesis_tidak_hanya', minCount: 2 },
+  // Formulaic conclusion / signposting openings
+  { re: /^(persoalannya|masalahnya|tantangannya) (tidak|bukan)/i, label: 'formula_persoalan', minCount: 2 },
+  { re: /^(di sinilah|di sini)\b/i,                          label: 'formula_di_sinilah', minCount: 2 },
+  // Repeated "Hal ini menunjukkan / membuktikan / mengindikasikan"
+  { re: /^hal ini (menunjukkan|membuktikan|mengindikasikan|memperlihatkan|mencerminkan)/i, label: 'formula_hal_ini_verb', minCount: 2 },
+  // Repeated consequence opener
+  { re: /^(ini (berarti|menandakan|menunjukkan)|artinya[,\s])/i, label: 'formula_ini_berarti', minCount: 2 },
+  // Repeated paragraph-opening question
+  { re: /^(lalu[,\s]|kemudian[,\s]|lantas[,\s]).*\?$/i,     label: 'formula_lalu_question', minCount: 2 },
+];
+
+/* ──────────────────────────────────────────────────────────────────
+   EDITORIAL ARTIFACT DETECTION
+   Detects broken text from copy-paste / formatting errors.
+   ────────────────────────────────────────────────────────────────── */
+
+/**
+ * Detect and repair editorial artifacts in the raw text.
+ *
+ * Problems handled:
+ *   1. Broken sentence boundary: ". [Lowercase start in same block]"
+ *      e.g. "masih ada warga. Merasa perlu..." → keep as-is (it may be intentional)
+ *   2. Merged heading: short all-caps / title-case phrase run into next sentence
+ *      e.g. "Ketika Kesejahteraan Belum Sepenuhnya Terasa BPS..." → insert line break before BPS
+ *   3. Source note merged into paragraph:
+ *      e.g. "Data kemiskinan Kompas.com Pada saat yang sama..."
+ *      → "Data kemiskinan (Kompas.com). Pada saat yang sama..."
+ *   4. Duplicated words: "yang yang", "dan dan", etc.
+ *
+ * Returns the repaired text string.
+ *
+ * @param {string} rawText
+ * @returns {string}
+ */
+function repairEditorialArtifacts(rawText) {
+  let text = rawText;
+
+  // 1. Duplicated adjacent words (e.g. "yang yang", "pada pada")
+  text = text.replace(/\b(\w{3,})\s+\1\b/gi, '$1');
+
+  // 2. Source citation artifact: "URL/source-name" abutting a sentence
+  //    "Sumber.com Pada" → "Sumber.com. Pada"
+  text = text.replace(
+    /([A-Za-z0-9]+\.(com|org|net|id|co\.id))\s+([A-ZÀÁÂÃÄÅÆ])/g,
+    '$1. $3'
+  );
+
+  // 3. Merged heading artifact: a sentence-ending word followed immediately
+  //    by what looks like a title-case heading start (all-caps run ≥2 words).
+  //    e.g. "...terasa BPS mencatat..." → the capital word "BPS" starts a new sentence
+  text = text.replace(
+    /([a-zàáâãäåæ]{3,}[.?!])\s+([A-Z]{2,}\b)/g,
+    '$1 $2'
+  );
+
+  // 4. Remove orphan fragment that looks like an inline note: " (Catatan: ...)" etc.
+  //    No-op for now — too risky to remove without context.
+
+  return text;
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   NATURAL WRITING QUALITY INDEX (NWQI)
+   Internal metric — NOT a human/AI probability score.
+   Used only to compare revision candidates.
+   Healthy ranges are preferred over metric extremes.
+   ────────────────────────────────────────────────────────────────── */
+
+/**
+ * NWQI weights (must sum to 1.00).
+ * This is the sole internal ranking metric for candidate comparison.
+ */
+const NWQI_WEIGHTS = {
+  sentenceVariation:    0.20,  // Sentence length CV — healthy range 0.30–0.65
+  repetitionControl:    0.18,  // Combined lex+phrase repetition reduction
+  structuralVariation:  0.15,  // Opening diversity + structural fingerprint variety
+  vocabularyDiversity:  0.15,  // TTR improvement — healthy range 0.45–0.80
+  transitionDiversity:  0.10,  // Transition density — healthy range 1–3 per paragraph
+  punctuationVariation: 0.08,  // Punctuation variety — healthy range 3–6 types
+  lexicalSpecificity:   0.07,  // NECESSARY terminology preserved, UNNECESSARY reduced
+  voicePreservation:    0.07,  // Author rhetorical style preserved
+};
+
+/**
+ * Detect the author's voice profile from the original text.
+ * Returns a lightweight profile used to protect rhetorical devices.
+ *
+ * @param {string[]} sentences
+ * @returns {object} authorVoiceProfile
+ */
+function buildAuthorVoiceProfile(sentences) {
+  const n = sentences.length;
+  const lengths = sentences.map(s => s.split(/\s+/).filter(w=>w).length);
+
+  // Rhetorical question count
+  const rhetoricQuestions = sentences.filter(s => s.trim().endsWith('?')).length;
+
+  // Short emphasis sentences (≤7 words, not a question)
+  const shortEmphasis = sentences.filter(s => {
+    const wc = s.split(/\s+/).filter(w=>w).length;
+    return wc >= 2 && wc <= 7 && !s.trim().endsWith('?');
+  }).length;
+
+  // Transition density (transitions per sentence)
+  const transitionCount = sentences.filter(s =>
+    TRANSITION_PATTERNS.some(tp => tp.re.test(s.toLowerCase().trim()))
+  ).length;
+
+  // Stance markers (hedging / certainty language)
+  const stanceMarkers = ['mungkin','kemungkinan','tampaknya','agaknya','rupanya',
+    'cenderung','dapat dikatakan','perlu dicatat','patut diperhatikan',
+    'perhaps','possibly','arguably','notably','arguably'];
+  const stanceCount = sentences.filter(s =>
+    stanceMarkers.some(m => s.toLowerCase().includes(m))
+  ).length;
+
+  // Sentence rhythm signature: mean + std of length
+  const mean = n > 0 ? lengths.reduce((a,b)=>a+b,0)/n : 0;
+  const std  = n > 1 ? Math.sqrt(lengths.reduce((s,l)=>s+(l-mean)**2,0)/n) : 0;
+  const cv   = mean > 0 ? std/mean : 0;
+
+  // Conceptual vocabulary: words used ≥3 times that are NOT in stop words
+  // These are the author's "signature" terms — never substitute them
+  const wordFreqLocal = {};
+  sentences.forEach(s => {
+    s.toLowerCase().match(/[a-zà-ÿ]{4,}/g)?.forEach(w => {
+      if (!STOP_WORDS.has(w)) wordFreqLocal[w] = (wordFreqLocal[w]||0) + 1;
+    });
+  });
+  const signatureTerms = new Set(
+    Object.entries(wordFreqLocal)
+      .filter(([w, c]) => c >= 3 && !SYNONYM_MAP[w])
+      .map(([w]) => w)
+  );
+
+  return {
+    rhetoricQuestions,
+    shortEmphasis,
+    transitionDensity: n > 0 ? transitionCount / n : 0,
+    stanceCount,
+    mean, std, cv,
+    signatureTerms,
+    sentenceCount: n,
+  };
+}
+
+/**
+ * Compute an editNecessityScore (0–10) for a single sentence.
+ * Low score → KEEP sentence. High score → eligible for revision.
+ *
+ * Score components:
+ *   +3  sentence is too long (>35 words)
+ *   +2  opening word repeated ≥3 times globally
+ *   +2  contains unnecessary repetition (non-signature word with synonym)
+ *   +2  transition opener used ≥3 times globally
+ *   +1  uniform-length cluster detected
+ *
+ * Deductions:
+ *   -3  sentence is a rhetorical question
+ *   -2  sentence is a short emphasis sentence (≤7 words)
+ *   -1  sentence contains a stance marker
+ *   -2  opening word is a signature term (protect author's characteristic openings)
+ */
+function computeEditNecessityScore(sentence, idx, sentences, wordFreq,
+                                    openingFreq, transitionCounts, voiceProfile,
+                                    rhetoricalCounts) {
+  const wc  = sentence.split(/\s+/).filter(w=>w).length;
+  const lc  = sentence.toLowerCase().trim();
+  const fw  = sentence.trim().split(/\s+/)[0]?.toLowerCase() || '';
+  const n   = sentences.length;
+  const totalWords = Object.values(wordFreq).reduce((a,b)=>a+b,0);
+  const rc  = rhetoricalCounts || {};
+
+  let score = 0;
+
+  // Positive factors (problems)
+  if (wc > 35) score += 3;
+  if (fw && !STOP_WORDS.has(fw) && (openingFreq[fw]||0) >= 3) score += 2;
+
+  // Unnecessary repetition: word has synonym AND is overused AND NOT a signature term
+  const wordTokens = lc.match(/[a-zà-ÿ]{4,}/g) || [];
+  const hasUnnecessaryRepeat = wordTokens.some(w => {
+    if (!SYNONYM_MAP[w]) return false;
+    if (voiceProfile.signatureTerms.has(w)) return false; // protect signature terms
+    const rate = (wordFreq[w]||0) / Math.max(1, totalWords) * 100;
+    return rate >= 2.0 && (wordFreq[w]||0) >= 3;
+  });
+  if (hasUnnecessaryRepeat) score += 2;
+
+  const tp = TRANSITION_PATTERNS.find(p => p.re.test(lc));
+  if (tp && (transitionCounts[tp.label]||0) >= 3) score += 2;
+
+  // Uniform-length cluster check
+  const lengths = sentences.map(s => s.split(/\s+/).filter(w=>w).length);
+  const neighbors = [idx-2, idx-1, idx+1, idx+2].filter(i => i>=0 && i<n);
+  const similarNeighbors = neighbors.filter(i => Math.abs(lengths[i] - wc) / Math.max(1, wc) < 0.2);
+  if (similarNeighbors.length >= 3) score += 1;
+
+  // Overused rhetorical pattern: +2
+  const hasOverusedRhetorical = RHETORICAL_PATTERNS.some(rp =>
+    rp.re.test(sentence.trim()) && (rc[rp.label]||0) >= rp.minCount
+  );
+  if (hasOverusedRhetorical) score += 2;
+
+  // Editorial artifact: duplicated word or merged heading artifact: +3
+  const hasEditorialArtifact = /\b(\w{3,})\s+\1\b/i.test(sentence) ||
+    /([a-zà-ÿ]{3,}[.?!])\s+([A-Z]{2,}\b)/.test(sentence);
+  if (hasEditorialArtifact) score += 3;
+
+  // Deductions (voice protection)
+  if (sentence.trim().endsWith('?')) score -= 3;              // rhetorical question
+  if (wc >= 2 && wc <= 7 && !sentence.trim().endsWith('?')) score -= 2; // emphasis sentence
+  const stanceMarkers = ['mungkin','kemungkinan','tampaknya','agaknya','rupanya',
+    'cenderung','dapat dikatakan','perlu dicatat','patut diperhatikan',
+    'perhaps','possibly','arguably','notably'];
+  if (stanceMarkers.some(m => lc.includes(m))) score -= 1;
+  if (voiceProfile.signatureTerms.has(fw)) score -= 2;        // signature opener
+
+  return Math.max(0, score);
+}
+
+/**
+ * Classify whether a word repetition is NECESSARY (terminology) or UNNECESSARY.
+ * Necessary: in signatureTerms OR has no available synonym OR rate < threshold.
+ * Unnecessary: has synonym, above rate threshold, NOT a signature term.
+ */
+function classifyRepetition(word, wordFreq, totalWords, voiceProfile) {
+  if (voiceProfile.signatureTerms.has(word)) return 'necessary';
+  if (!SYNONYM_MAP[word]) return 'necessary';
+  const rate = (wordFreq[word]||0) / Math.max(1, totalWords) * 100;
+  if (rate < 2.0 || (wordFreq[word]||0) < 3) return 'necessary';
+  return 'unnecessary';
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   NATURAL WRITING QUALITY INDEX — Scoring function
+   ────────────────────────────────────────────────────────────────── */
+
+/**
+ * Compute NWQI (0–100) for a candidate vs the original.
+ *
+ * This is INTERNAL only — NOT displayed as "Human Score" or "AI Score".
+ * Only used to rank candidates against each other.
+ *
+ * Scoring uses HEALTHY RANGES, not direction-of-maximum.
+ * A metric scores best when it lands within a balanced target range.
+ *
+ * @param {object} origAnalysis
+ * @param {object} candAnalysis
+ * @param {object} semanticResult   — { preserved: bool, loss: 0–1 }
+ * @param {object} voiceProfile     — from buildAuthorVoiceProfile(original)
+ * @returns {number} 0–100
+ */
+function computeNWQI(origAnalysis, candAnalysis, semanticResult, voiceProfile) {
+  const o = origAnalysis.features;
+  const c = candAnalysis.features;
+
+  // ── Dimension 1: Sentence Variation (20 pts) ───────────────────────────
+  // Healthy CV range: 0.30–0.65. Score peaks at 0.45–0.55.
+  // We reward MOVING toward the healthy range, penalise moving away.
+  const origCV = o.sentenceUniformity.raw.cv;
+  const candCV = c.sentenceUniformity.raw.cv;
+  const targetCV = 0.48; // centre of healthy range
+  const origCVDist = Math.abs(origCV - targetCV);
+  const candCVDist = Math.abs(candCV - targetCV);
+  // Moving closer to target = improvement; further away = regression
+  const cvImprovement = origCVDist - candCVDist; // positive = improved
+  const d1 = Math.round(Math.min(20, Math.max(0, 10 + cvImprovement * 40)));
+
+  // ── Dimension 2: Repetition Control (18 pts) ──────────────────────────
+  // Reward reduction of UNNECESSARY repetition. Penalise increase.
+  const lexDiff   = o.lexicalRepetition.score - c.lexicalRepetition.score;
+  const phraseDiff= o.phraseRepetition.score  - c.phraseRepetition.score;
+  const lexPts    = Math.max(0, Math.min(11, lexDiff * 1.8));
+  const phrasePts = Math.max(0, Math.min(7,  phraseDiff * 1.4));
+  const d2 = lexPts + phrasePts;
+
+  // ── Dimension 3: Structural Variation (15 pts) ─────────────────────────
+  // Opening diversity + burstiness (rhythm variation)
+  // Healthy burstiness: CV around 0.35–0.70
+  const origBurst = o.burstiness.score;
+  const candBurst = c.burstiness.score;
+  const burstDiff = origBurst - candBurst; // lower burstiness score = better variation
+  const burstPts  = Math.max(0, Math.min(9, burstDiff * 1.5));
+  // Structural consistency: moving toward moderate (40–70 range is OK)
+  const scDiff = o.structuralConsistency.score - c.structuralConsistency.score;
+  const scPts  = Math.max(0, Math.min(6, scDiff * 1.2));
+  const d3 = burstPts + scPts;
+
+  // ── Dimension 4: Vocabulary Diversity (15 pts) ─────────────────────────
+  // Healthy TTR range: 0.45–0.80. Reward movement toward this range.
+  const origTTR = o.vocabularyDiversity.ttr;
+  const candTTR = c.vocabularyDiversity.ttr;
+  const targetTTR = 0.60;
+  const origTTRDist = Math.abs(origTTR - targetTTR);
+  const candTTRDist = Math.abs(candTTR - targetTTR);
+  const ttrImprovement = origTTRDist - candTTRDist;
+  const d4 = Math.round(Math.min(15, Math.max(0, 7 + ttrImprovement * 40)));
+
+  // ── Dimension 5: Transition Diversity (10 pts) ─────────────────────────
+  // Any reduction in transition density is good. Reward removal of overused transitions.
+  const punctDiff = o.punctuationVariation.score - c.punctuationVariation.score;
+  // Use punctuation improvement as proxy for transition diversity (both involve flow markers)
+  const d5 = Math.max(0, Math.min(10, 5 + (punctDiff > 0 ? punctDiff * 0.8 : punctDiff * 1.5)));
+
+  // ── Dimension 6: Punctuation Variation (8 pts) ─────────────────────────
+  const d6 = Math.max(0, Math.min(8, 4 + punctDiff * 0.6));
+
+  // ── Dimension 7: Lexical Specificity (7 pts) ───────────────────────────
+  // Semantic preservation is the proxy: important terms preserved
+  const d7 = semanticResult.preserved ? 7 : Math.round(7 * (1 - semanticResult.loss * 1.5));
+
+  // ── Dimension 8: Voice Preservation (7 pts) ────────────────────────────
+  // Word count stability (95–105% = full 7 pts; beyond = scaled down)
+  const wordRatio = candAnalysis.wordCount / Math.max(1, origAnalysis.wordCount);
+  let d8;
+  if (wordRatio >= 0.95 && wordRatio <= 1.05) d8 = 7;
+  else if (wordRatio >= 0.90 && wordRatio <= 1.10) d8 = 5;
+  else if (wordRatio >= 0.85 && wordRatio <= 1.15) d8 = 3;
+  else d8 = 0;
+
+  const rawScore = d1 + d2 + d3 + d4 + d5 + d6 + d7 + d8;
+  return Math.round(Math.max(0, Math.min(100, rawScore)));
+}
 
 /* ──────────────────────────────────────────────────────────────────
    SENTENCE DIAGNOSIS SYSTEM
    ────────────────────────────────────────────────────────────────── */
 
 /**
- * Classify each sentence into a revision urgency tier.
+ * Classify each sentence into a revision urgency tier, using editNecessityScore.
  *
- * KEEP           — sentence is already strong; do not touch it
- * REVISE_LIGHT   — one minor issue (opening repetition OR one overused word)
- * REVISE_MODERATE— two issues or a structural pattern problem
- * REVISE_STRONG  — multiple problems; sentence genuinely needs work
+ * KEEP           — editNecessityScore < 2 OR sentence is a protected rhetorical device
+ * REVISE_LIGHT   — editNecessityScore 2–3
+ * REVISE_MODERATE— editNecessityScore 4–5
+ * REVISE_STRONG  — editNecessityScore ≥ 6
  *
- * @returns {Array<{idx, sentence, tier, issues: string[]}>}
+ * @param {string[]} sentences
+ * @param {object}   wordFreq
+ * @param {object}   voiceProfile  — from buildAuthorVoiceProfile()
+ * @returns {Array<{idx, sentence, tier, issues, wc, necessityScore}>}
  */
-function classifySentences(sentences, wordFreq) {
+function classifySentences(sentences, wordFreq, voiceProfile, rhetoricalCounts) {
   const n          = sentences.length;
   const lengths    = sentences.map(s => s.split(/\s+/).filter(w=>w).length);
-  const mean       = n > 0 ? lengths.reduce((a,b)=>a+b,0)/n : 0;
   const totalWords = Object.values(wordFreq).reduce((a,b)=>a+b,0);
+  const rc         = rhetoricalCounts || {};
 
   // Build opening-word frequency map (ignoring stop words)
   const openingFreq = {};
@@ -2090,61 +2446,75 @@ function classifySentences(sentences, wordFreq) {
     const issues = [];
     const wc     = lengths[idx];
     const s_lc   = sentence.toLowerCase().trim();
+    const fw     = sentence.trim().split(/\s+/)[0]?.toLowerCase() || '';
 
-    // Issue 1: sentence length far from mean (either very long or very short relative to context)
+    // Issue 1: sentence too long
     if (wc > 35) issues.push('too_long');
     if (wc < 5 && n > 3) issues.push('too_short');
 
-    // Issue 2: word length close to too many neighbors (uniformity contribution)
-    // Check if ±2 neighbors have within ±20% word count — indicates local uniformity cluster
+    // Issue 2: uniform-length cluster
     const neighbors = [idx-2, idx-1, idx+1, idx+2].filter(i=>i>=0&&i<n);
     const similarNeighbors = neighbors.filter(i => Math.abs(lengths[i] - wc) / Math.max(1, wc) < 0.2);
     if (similarNeighbors.length >= 3) issues.push('uniform_cluster');
 
-    // Issue 3: repeated opening word (used ≥3 times globally)
-    const fw = sentence.trim().split(/\s+/)[0]?.toLowerCase() || '';
-    if (fw && !STOP_WORDS.has(fw) && (openingFreq[fw]||0) >= 3) issues.push('repeated_opening');
+    // Issue 3: repeated opening (≥3 globally) — but NOT if it's a signature opener
+    if (fw && !STOP_WORDS.has(fw) && (openingFreq[fw]||0) >= 3 &&
+        !voiceProfile.signatureTerms.has(fw)) {
+      issues.push('repeated_opening');
+    }
 
-    // Issue 4: contains overused non-technical words
+    // Issue 4: unnecessary repetition (has synonym, above threshold, NOT signature term)
     const wordTokens = s_lc.match(/[a-zà-ÿ]{4,}/g) || [];
-    const hasOverusedWord = wordTokens.some(w => {
-      if (!SYNONYM_MAP[w]) return false;
-      const rate = (wordFreq[w]||0) / Math.max(1, totalWords) * 100;
-      return rate >= 2.0 && (wordFreq[w]||0) >= 3;
-    });
-    if (hasOverusedWord) issues.push('overused_word');
+    const hasUnnecessaryRepeat = wordTokens.some(w =>
+      classifyRepetition(w, wordFreq, totalWords, voiceProfile) === 'unnecessary'
+    );
+    if (hasUnnecessaryRepeat) issues.push('overused_word');
 
-    // Issue 5: opens with a filler transition that is overused globally
+    // Issue 5: overused transition (≥2 globally)
     const matchedTransition = TRANSITION_PATTERNS.find(tp => tp.re.test(s_lc));
     if (matchedTransition && (transitionCounts[matchedTransition.label]||0) >= 2) {
       issues.push('overused_transition');
     }
 
-    // Issue 6: redundant phrase — sentence contains a bigram that is over-repeated
-    // (piggyback on word freq: detect two consecutive content words both overused)
+    // Issue 6: redundant phrase — two consecutive content words both overused & unnecessary
     const tokens4plus = wordTokens.filter(w => w.length >= 4 && !STOP_WORDS.has(w));
     const redundantBigram = tokens4plus.some((w, i) => {
       if (i === 0) return false;
       const w2 = tokens4plus[i-1];
-      const r1 = (wordFreq[w]||0) / Math.max(1, totalWords) * 100;
-      const r2 = (wordFreq[w2]||0) / Math.max(1, totalWords) * 100;
-      return r1 >= 2.0 && r2 >= 2.0;
+      return classifyRepetition(w, wordFreq, totalWords, voiceProfile) === 'unnecessary' &&
+             classifyRepetition(w2, wordFreq, totalWords, voiceProfile) === 'unnecessary';
     });
     if (redundantBigram) issues.push('redundant_phrase');
 
-    // Tier assignment
+    // Issue 7: overused rhetorical formula (≥ minCount globally)
+    const matchedRhetorical = RHETORICAL_PATTERNS.find(rp =>
+      rp.re.test(sentence.trim()) && (rc[rp.label]||0) >= rp.minCount
+    );
+    if (matchedRhetorical) issues.push('overused_rhetorical');
+
+    // Issue 8: editorial artifact (duplicated word / merged boundary)
+    const hasEditorialArtifact = /\b(\w{3,})\s+\1\b/i.test(sentence) ||
+      /([a-zà-ÿ]{3,}[.?!])\s+([A-Z]{2,}\b)/.test(sentence);
+    if (hasEditorialArtifact) issues.push('editorial_artifact');
+
+    // ── Edit necessity score (gates whether this sentence should be revised) ──
+    const necessityScore = computeEditNecessityScore(
+      sentence, idx, sentences, wordFreq, openingFreq, transitionCounts, voiceProfile, rc
+    );
+
+    // Tier assignment based on necessityScore (not raw issue count)
     let tier;
-    if (issues.length === 0) {
+    if (necessityScore < 2) {
       tier = 'KEEP';
-    } else if (issues.length === 1) {
+    } else if (necessityScore <= 3) {
       tier = 'REVISE_LIGHT';
-    } else if (issues.length <= 3) {
+    } else if (necessityScore <= 5) {
       tier = 'REVISE_MODERATE';
     } else {
       tier = 'REVISE_STRONG';
     }
 
-    return { idx, sentence, tier, issues, wc };
+    return { idx, sentence, tier, issues, wc, necessityScore };
   });
 }
 
@@ -2319,19 +2689,35 @@ function strategyCombineSentences(s1, s2) {
 }
 
 /**
- * Strategy D — Remove redundant occurrences.
- * Given the sentence and a set of overused words, reduce one occurrence per sentence
- * by substituting with a synonym (gap-checked).
+ * Strategy D — Reduce UNNECESSARY word repetition only.
+ * Substitutes one occurrence per sentence with a contextual synonym (gap-checked).
+ * Skips words classified as NECESSARY (signature terms, no synonym, low frequency).
+ *
+ * @param {string}  sentence
+ * @param {object}  wordFreq
+ * @param {object}  lastReplacedAt   — mutable state passed between sentences
+ * @param {number}  sentIdx
+ * @param {number}  minFreq          — minimum global frequency to consider
+ * @param {number}  minGap           — minimum sentence gap before re-substituting same word
+ * @param {object}  voiceProfile     — protects signature terms
  */
-function strategyReduceRedundancy(sentence, wordFreq, lastReplacedAt, sentIdx, minFreq, minGap) {
+function strategyReduceRedundancy(sentence, wordFreq, lastReplacedAt, sentIdx,
+                                   minFreq, minGap, voiceProfile) {
+  const totalWords = Object.values(wordFreq).reduce((a,b)=>a+b,0);
   const tokens = sentence.split(/(\s+|(?=[.,;:!?()—–"'])|(?<=[.,;:!?()—–"']))/);
   let changeCount = 0;
-  const maxPerSent = 2;
+  const maxPerSent = 1; // reduced to 1 per sentence for more natural output
 
   const result = tokens.map(token => {
     if (changeCount >= maxPerSent) return token;
     const lower = token.toLowerCase();
     if (!lower.match(/^[a-zà-ÿ]{4,}$/) || STOP_WORDS.has(lower)) return token;
+
+    // NECESSITY CHECK: only substitute if UNNECESSARY repetition
+    if (voiceProfile && classifyRepetition(lower, wordFreq, totalWords, voiceProfile) === 'necessary') {
+      return token;
+    }
+
     const syns = SYNONYM_MAP[lower];
     if (!syns || syns.length === 0) return token;
     const freq = wordFreq[lower] || 0;
@@ -2452,22 +2838,162 @@ function strategyReorderClauses(sentence) {
 }
 
 /* ──────────────────────────────────────────────────────────────────
+   NEW STRATEGIES (H, I, J)
+   ────────────────────────────────────────────────────────────────── */
+
+/**
+ * Strategy H — Remove filler opener phrases.
+ *
+ * Strips well-known formulaic sentence starters that add no content:
+ *   "Hal ini menunjukkan bahwa ..."  → "..."
+ *   "Ini berarti bahwa ..."          → "..."
+ *   "Di sinilah kita ..."            → "Kita ..."  (kept — has content)
+ *
+ * Returns the stripped sentence, or the original if no match.
+ *
+ * @param {string} sentence
+ * @returns {string}
+ */
+function strategyRemoveFillerOpener(sentence) {
+  const s  = sentence.trim();
+  const lc = s.toLowerCase();
+
+  const fillers = [
+    'hal ini menunjukkan bahwa ',
+    'hal ini mengindikasikan bahwa ',
+    'hal ini membuktikan bahwa ',
+    'hal ini memperlihatkan bahwa ',
+    'hal ini mencerminkan bahwa ',
+    'hal ini adalah ',
+    'hal ini merupakan ',
+    'ini berarti bahwa ',
+    'ini menandakan bahwa ',
+    'artinya, ',
+    'artinya ',
+  ];
+
+  for (const filler of fillers) {
+    if (lc.startsWith(filler)) {
+      const rest = s.slice(filler.length).trim();
+      if (rest.split(/\s+/).length >= 4) {
+        return rest.charAt(0).toUpperCase() + rest.slice(1);
+      }
+    }
+  }
+  return sentence;
+}
+
+/**
+ * Strategy I — Vary an overused rhetorical formula.
+ *
+ * When a sentence matches a pattern that has been used ≥ minCount times,
+ * apply a lightweight surface rewrite to vary it.  The content is preserved.
+ *
+ * @param {string} sentence
+ * @param {object} rhetoricalCounts   — { [label]: count }
+ * @param {object} voiceProfile
+ * @returns {string}  revised sentence, or original if no applicable rewrite
+ */
+function strategyVaryRhetoricalFormula(sentence, rhetoricalCounts, voiceProfile) {
+  if (!rhetoricalCounts) return sentence;
+  const s = sentence.trim();
+
+  // ── Vary "Hal ini menunjukkan / mengindikasikan / membuktikan" ──────────────
+  // When seen ≥2 times, rewrite using a different signposting form.
+  const halIniMatch = s.match(
+    /^Hal ini (menunjukkan|mengindikasikan|membuktikan|memperlihatkan|mencerminkan)(,?\s+bahwa\s+)(.*)/i
+  );
+  if (halIniMatch &&
+      (rhetoricalCounts['formula_hal_ini_verb']||0) >= 2) {
+    const verb    = halIniMatch[1].toLowerCase();
+    const content = halIniMatch[3].trim();
+    // Alternatives that vary the framing without changing the meaning
+    const alternatives = [
+      `Kondisi ini ${verb} ${content}`,
+      `Fenomena ini ${verb} ${content}`,
+      `Kenyataan ini ${verb} ${content}`,
+    ];
+    // Pick alternative based on cycle count (deterministic, not random)
+    const cycle = (rhetoricalCounts['formula_hal_ini_verb'] || 1) % alternatives.length;
+    return alternatives[cycle];
+  }
+
+  // ── Vary "Ini berarti / menandakan" ─────────────────────────────────────────
+  const iniBerMatch = s.match(
+    /^(Ini (berarti|menandakan|menunjukkan)|Artinya[,\s]+)(.*)/i
+  );
+  if (iniBerMatch &&
+      (rhetoricalCounts['formula_ini_berarti']||0) >= 2) {
+    const content = iniBerMatch[3].trim();
+    const alternatives = [
+      `Dengan kata lain, ${content.charAt(0).toLowerCase()}${content.slice(1)}`,
+      `Maknanya, ${content.charAt(0).toLowerCase()}${content.slice(1)}`,
+    ];
+    const cycle = (rhetoricalCounts['formula_ini_berarti'] || 1) % alternatives.length;
+    return alternatives[cycle];
+  }
+
+  // ── Vary antithesis "bukan … tetapi/melainkan" ────────────────────────────
+  // Already varied naturally; only touch when overuse is severe (≥3×)
+  if ((rhetoricalCounts['antithesis_bukan_tetapi']||0) >= 3) {
+    const bkMatch = s.match(/^(.*?)\bbukan\b(.{4,60})\b(tetapi|melainkan|justru)\b(.*)/i);
+    if (bkMatch) {
+      const pre   = bkMatch[1].trim();
+      const after = bkMatch[4].trim();
+      const mid   = bkMatch[2].trim();
+      // "Bukan X tetapi Y" → "Tidak sekadar X, melainkan Y" or "Lebih dari X, Y"
+      if (!pre) {
+        return `Tidak sekadar ${mid}, ${bkMatch[3].toLowerCase()} ${after}`;
+      }
+    }
+  }
+
+  return sentence;
+}
+
+/**
+ * Strategy J — Sentence-level editorial artifact repair.
+ *
+ * Applies `repairEditorialArtifacts` on a single sentence string.
+ * Safe to call on any sentence; returns the original if no repair needed.
+ *
+ * @param {string} sentence
+ * @returns {string}
+ */
+function strategyRepairSentence(sentence) {
+  const repaired = repairEditorialArtifacts(sentence.trim());
+  return repaired !== sentence.trim() ? repaired : sentence;
+}
+
+/* ──────────────────────────────────────────────────────────────────
    CANDIDATE GENERATION (3 meaningfully different strategies)
    ────────────────────────────────────────────────────────────────── */
 
 /**
  * Candidate 1 — MINIMAL REVISION
- * Changes only the most obvious problems.
- * Default is KEEP for all sentences unless the issue is clear.
- * Strategies used: D (light redundancy), E (opening rotation 2nd+ only), F (transitions ≥3)
+ *
+ * Edit target: ≤15% of sentences (strictest guardrail).
+ * Strategies: J (artifact repair), H (filler opener), F (transitions ≥3×), E (opening 2nd+), D (minFreq=5, gap=3).
+ * Rhetorical questions, short-emphasis sentences, and signature openers are never touched.
+ *
+ * @param {string[]}  sentences
+ * @param {object[]}  classification   — from classifySentences()
+ * @param {object}    wordFreq
+ * @param {object}    transitionCounts
+ * @param {object}    voiceProfile     — from buildAuthorVoiceProfile()
+ * @param {object}    rhetoricalCounts — from generateImprovedText()
  */
-function generateCandidateMinimal(sentences, classification, wordFreq, transitionCounts) {
+function generateCandidateMinimal(sentences, classification, wordFreq, transitionCounts, voiceProfile, rhetoricalCounts) {
   const lastReplacedAt = {};
   const changeLog = { synonymsReplaced: 0, transitionsRemoved: 0, openingsVaried: 0,
-                      sentencesSplit: 0, sentencesCombined: 0, keptSentences: 0 };
+                      sentencesSplit: 0, sentencesCombined: 0, keptSentences: 0,
+                      rhetoricalRepairs: 0, editorialRepairs: 0 };
 
-  // Track opening occurrence counters
   const openingOccurrences = {};
+  const maxEditRate = 0.15; // 15% max for Minimal
+  const maxEditable = Math.max(1, Math.ceil(sentences.length * maxEditRate));
+  let totalEdited = 0;
+  const rc = rhetoricalCounts || {};
 
   const result = [];
   let i = 0;
@@ -2475,31 +3001,32 @@ function generateCandidateMinimal(sentences, classification, wordFreq, transitio
     const cl = classification[i];
     const sentence = sentences[i];
 
-    // Count opening occurrence
     const fw = sentence.trim().split(/\s+/)[0]?.toLowerCase() || '';
     if (!STOP_WORDS.has(fw)) openingOccurrences[fw] = (openingOccurrences[fw]||0) + 1;
-    const occNum = (openingOccurrences[fw]||1) - 1; // 0-based
+    const occNum = (openingOccurrences[fw]||1) - 1;
 
     let s = sentence;
     let changed = false;
 
-    if (cl.tier === 'KEEP') {
-      changeLog.keptSentences++;
-    } else {
-      // Strategy E: rotate opening ONLY if appears ≥3 times and this is occurrence ≥2
-      if (cl.issues.includes('repeated_opening') && occNum >= 1) {
-        const revised = strategyChangeOpening(s, occNum);
-        if (revised !== s) { s = revised; changeLog.openingsVaried++; changed = true; }
+    // Only revise if tier warrants it AND global edit budget not exhausted
+    // AND this is not a protected rhetorical device
+    const canEdit = cl.tier !== 'KEEP' && totalEdited < maxEditable;
+
+    if (canEdit) {
+      // Strategy J: repair editorial artifacts first (highest priority — always safe)
+      if (!changed && cl.issues.includes('editorial_artifact')) {
+        const revised = strategyRepairSentence(s);
+        if (revised !== s) { s = revised; changeLog.editorialRepairs++; changed = true; }
       }
 
-      // Strategy D: reduce ONE overused word per sentence (conservative: minFreq=5, gap=3)
-      if (cl.issues.includes('overused_word') && !changed) {
-        const revised = strategyReduceRedundancy(s, wordFreq, lastReplacedAt, i, 5, 3);
-        if (revised !== s) { s = revised; changeLog.synonymsReplaced++; changed = true; }
+      // Strategy H: remove filler opener (Minimal: only apply on hard fillers like "Hal ini menunjukkan bahwa")
+      if (!changed && cl.issues.includes('overused_rhetorical')) {
+        const revised = strategyRemoveFillerOpener(s);
+        if (revised !== s) { s = revised; changeLog.rhetoricalRepairs++; changed = true; }
       }
 
-      // Strategy F: remove transition ONLY if used ≥3 times (very conservative)
-      if (cl.issues.includes('overused_transition')) {
+      // Strategy F: remove transition ONLY if used ≥3 times (very conservative threshold)
+      if (!changed && cl.issues.includes('overused_transition')) {
         const tp = TRANSITION_PATTERNS.find(p => p.re.test(s.toLowerCase().trim()));
         if (tp && (transitionCounts[tp.label]||0) >= 3) {
           const revised = strategyRemoveTransition(s, tp.label);
@@ -2507,9 +3034,22 @@ function generateCandidateMinimal(sentences, classification, wordFreq, transitio
         }
       }
 
-      if (!changed) changeLog.keptSentences++;
+      // Strategy E: vary repeated opening (2nd+ occurrence only)
+      if (!changed && cl.issues.includes('repeated_opening') && occNum >= 1) {
+        const revised = strategyChangeOpening(s, occNum);
+        if (revised !== s) { s = revised; changeLog.openingsVaried++; changed = true; }
+      }
+
+      // Strategy D: reduce UNNECESSARY overused word (conservative: minFreq=5, gap=3)
+      if (!changed && cl.issues.includes('overused_word')) {
+        const revised = strategyReduceRedundancy(s, wordFreq, lastReplacedAt, i, 5, 3, voiceProfile);
+        if (revised !== s) { s = revised; changeLog.synonymsReplaced++; changed = true; }
+      }
+
+      if (changed) totalEdited++;
     }
 
+    if (!changed) changeLog.keptSentences++;
     result.push(s);
     i++;
   }
@@ -2518,16 +3058,32 @@ function generateCandidateMinimal(sentences, classification, wordFreq, transitio
 }
 
 /**
- * Candidate 2 — BALANCED REVISION
- * Improves rhythm, repetition, and transitions while maintaining author voice.
- * Strategies: D (moderate), E (opening), F (transitions ≥2), B (very long sentences only)
+ * Candidate 2 — BALANCED REVISION (Rhetorical Edit)
+ *
+ * Edit target: ≤30% of sentences.
+ * Addresses rhythm, unnecessary repetition, redundant transitions, and overused rhetorical formulas.
+ * Preserves all rhetorical devices from voiceProfile.
+ * Strategies: J, H, I (rhetorical vary), F (≥2×), E (opening 2nd+), D (minFreq=4, gap=2), B (>35w)
+ *
+ * @param {string[]}  sentences
+ * @param {object[]}  classification
+ * @param {object}    wordFreq
+ * @param {object}    transitionCounts
+ * @param {object}    voiceProfile
+ * @param {object}    rhetoricalCounts
  */
-function generateCandidateBalanced(sentences, classification, wordFreq, transitionCounts) {
+function generateCandidateBalanced(sentences, classification, wordFreq, transitionCounts, voiceProfile, rhetoricalCounts) {
   const lastReplacedAt = {};
   const changeLog = { synonymsReplaced: 0, transitionsRemoved: 0, openingsVaried: 0,
-                      sentencesSplit: 0, sentencesCombined: 0, keptSentences: 0 };
+                      sentencesSplit: 0, sentencesCombined: 0, keptSentences: 0,
+                      rhetoricalRepairs: 0, editorialRepairs: 0 };
 
   const openingOccurrences = {};
+  const maxEditRate = 0.30;
+  const maxEditable = Math.max(1, Math.ceil(sentences.length * maxEditRate));
+  let totalEdited = 0;
+  const rc = rhetoricalCounts || {};
+
   const result = [];
   let i = 0;
 
@@ -2542,43 +3098,69 @@ function generateCandidateBalanced(sentences, classification, wordFreq, transiti
     let s = sentence;
     let changeCount = 0;
 
-    if (cl.tier === 'KEEP' && !cl.issues.includes('overused_word')) {
+    // Hard KEEP: tier 'KEEP' sentences are untouched regardless of budget
+    if (cl.tier === 'KEEP') {
       changeLog.keptSentences++;
       result.push(s);
       i++;
       continue;
     }
 
-    // Strategy B: split very long sentences (>35 words)
-    if (cl.issues.includes('too_long')) {
-      const parts = strategySplitSentence(s);
-      if (parts.length > 1) {
-        result.push(...parts);
-        changeLog.sentencesSplit++;
-        i++;
-        continue;
+    const canEdit = totalEdited < maxEditable;
+
+    if (canEdit) {
+      // Strategy J: repair editorial artifacts (always safe, highest priority)
+      if (cl.issues.includes('editorial_artifact')) {
+        const revised = strategyRepairSentence(s);
+        if (revised !== s) { s = revised; changeLog.editorialRepairs++; changeCount++; }
       }
-    }
 
-    // Strategy F: remove overused transitions (≥2 occurrences)
-    if (cl.issues.includes('overused_transition')) {
-      const tp = TRANSITION_PATTERNS.find(p => p.re.test(s.toLowerCase().trim()));
-      if (tp && (transitionCounts[tp.label]||0) >= 2) {
-        const revised = strategyRemoveTransition(s, tp.label);
-        if (revised !== s) { s = revised; changeLog.transitionsRemoved++; changeCount++; }
+      // Strategy B: split only genuinely too-long sentences (> 35 words)
+      if (changeCount === 0 && cl.issues.includes('too_long')) {
+        const parts = strategySplitSentence(s);
+        if (parts.length > 1) {
+          result.push(...parts);
+          changeLog.sentencesSplit++;
+          totalEdited++;
+          i++;
+          continue;
+        }
       }
-    }
 
-    // Strategy E: vary repeated sentence opening
-    if (cl.issues.includes('repeated_opening') && occNum >= 1) {
-      const revised = strategyChangeOpening(s, occNum);
-      if (revised !== s) { s = revised; changeLog.openingsVaried++; changeCount++; }
-    }
+      // Strategy I: vary overused rhetorical formula
+      if (cl.issues.includes('overused_rhetorical')) {
+        const varied = strategyVaryRhetoricalFormula(s, rc, voiceProfile);
+        if (varied !== s) {
+          s = varied; changeLog.rhetoricalRepairs++; changeCount++;
+        } else {
+          // Fallback: if vary didn't change it, try removing the filler opener
+          const stripped = strategyRemoveFillerOpener(s);
+          if (stripped !== s) { s = stripped; changeLog.rhetoricalRepairs++; changeCount++; }
+        }
+      }
 
-    // Strategy D: reduce one overused word (moderate: minFreq=4, gap=2)
-    if (cl.issues.includes('overused_word') || cl.issues.includes('redundant_phrase')) {
-      const revised = strategyReduceRedundancy(s, wordFreq, lastReplacedAt, i, 4, 2);
-      if (revised !== s) { s = revised; changeLog.synonymsReplaced++; changeCount++; }
+      // Strategy F: remove overused transition (≥2 occurrences)
+      if (cl.issues.includes('overused_transition')) {
+        const tp = TRANSITION_PATTERNS.find(p => p.re.test(s.toLowerCase().trim()));
+        if (tp && (transitionCounts[tp.label]||0) >= 2) {
+          const revised = strategyRemoveTransition(s, tp.label);
+          if (revised !== s) { s = revised; changeLog.transitionsRemoved++; changeCount++; }
+        }
+      }
+
+      // Strategy E: vary repeated sentence opening (2nd+ occurrence)
+      if (cl.issues.includes('repeated_opening') && occNum >= 1) {
+        const revised = strategyChangeOpening(s, occNum);
+        if (revised !== s) { s = revised; changeLog.openingsVaried++; changeCount++; }
+      }
+
+      // Strategy D: reduce UNNECESSARY repetition (moderate: minFreq=4, gap=2)
+      if (cl.issues.includes('overused_word') || cl.issues.includes('redundant_phrase')) {
+        const revised = strategyReduceRedundancy(s, wordFreq, lastReplacedAt, i, 4, 2, voiceProfile);
+        if (revised !== s) { s = revised; changeLog.synonymsReplaced++; changeCount++; }
+      }
+
+      if (changeCount > 0) totalEdited++;
     }
 
     if (changeCount === 0) changeLog.keptSentences++;
@@ -2590,22 +3172,38 @@ function generateCandidateBalanced(sentences, classification, wordFreq, transiti
 }
 
 /**
- * Candidate 3 — STRUCTURAL REVISION
- * Allows sentence combining/splitting and clause reordering where genuinely useful.
- * Strategies: B (split), C (combine short pairs), E, F, G (reorder), D (active)
+ * Candidate 3 — STRUCTURAL + DEEP RHETORICAL REVISION
+ *
+ * Edit target: ≤35% of sentences (maximum product guardrail).
+ * Allows deeper clause reordering, sentence restructuring, and full rhetorical variation.
+ * Still respects the voiceProfile — rhetorical questions and emphasis sentences are kept.
+ * Strategies: J, I (vary formula), H (filler), B (split), C (combine), G (reorder), E, F, D
+ *
+ * @param {string[]}  sentences
+ * @param {object[]}  classification
+ * @param {object}    wordFreq
+ * @param {object}    transitionCounts
+ * @param {object}    voiceProfile
+ * @param {object}    rhetoricalCounts
  */
-function generateCandidateStructural(sentences, classification, wordFreq, transitionCounts) {
+function generateCandidateStructural(sentences, classification, wordFreq, transitionCounts, voiceProfile, rhetoricalCounts) {
   const lastReplacedAt = {};
   const changeLog = { synonymsReplaced: 0, transitionsRemoved: 0, openingsVaried: 0,
-                      sentencesSplit: 0, sentencesCombined: 0, keptSentences: 0 };
+                      sentencesSplit: 0, sentencesCombined: 0, keptSentences: 0,
+                      rhetoricalRepairs: 0, editorialRepairs: 0 };
 
   const openingOccurrences = {};
+  const maxEditRate = 0.35;
+  const maxEditable = Math.max(1, Math.ceil(sentences.length * maxEditRate));
+  let totalEdited = 0;
+  const rc = rhetoricalCounts || {};
+
   const result = [];
   let i = 0;
 
   while (i < sentences.length) {
     const cl   = classification[i];
-    const cl2  = classification[i+1]; // may be undefined
+    const cl2  = classification[i+1];
     const sentence  = sentences[i];
     const sentence2 = sentences[i+1];
 
@@ -2616,53 +3214,88 @@ function generateCandidateStructural(sentences, classification, wordFreq, transi
     let s = sentence;
     let changeCount = 0;
 
-    // Strategy C: combine two very short adjacent sentences
-    if (cl.wc <= 7 && cl2 && cl2.wc <= 7 && cl.tier !== 'KEEP') {
-      const combined = strategyCombineSentences(s, sentence2);
-      if (combined) {
-        result.push(combined);
-        changeLog.sentencesCombined++;
-        i += 2; // consume both
-        continue;
+    // Hard KEEP: tier 'KEEP' sentences always preserved
+    if (cl.tier === 'KEEP') {
+      changeLog.keptSentences++;
+      result.push(s);
+      i++;
+      continue;
+    }
+
+    const canEdit = totalEdited < maxEditable;
+
+    if (canEdit) {
+      // Strategy J: repair editorial artifacts (always safe, highest priority)
+      if (cl.issues.includes('editorial_artifact')) {
+        const revised = strategyRepairSentence(s);
+        if (revised !== s) { s = revised; changeLog.editorialRepairs++; changeCount++; }
       }
-    }
 
-    // Strategy B: split long sentences
-    if (cl.issues.includes('too_long')) {
-      const parts = strategySplitSentence(s);
-      if (parts.length > 1) {
-        result.push(...parts);
-        changeLog.sentencesSplit++;
-        i++;
-        continue;
+      // Strategy C: combine two very short adjacent sentences
+      // Only when BOTH have low necessity scores (don't combine emphasis sentences)
+      if (changeCount === 0 && cl.wc <= 7 && cl2 && cl2.wc <= 7 &&
+          (cl.necessityScore||0) >= 2 && (cl2.necessityScore||0) >= 2) {
+        const combined = strategyCombineSentences(s, sentence2);
+        if (combined) {
+          result.push(combined);
+          changeLog.sentencesCombined++;
+          totalEdited++;
+          i += 2;
+          continue;
+        }
       }
-    }
 
-    // Strategy G: reorder clauses for moderate+ sentences
-    if ((cl.tier === 'REVISE_MODERATE' || cl.tier === 'REVISE_STRONG') && cl.wc >= 12 && cl.wc <= 40) {
-      const revised = strategyReorderClauses(s);
-      if (revised !== s) { s = revised; changeCount++; }
-    }
-
-    // Strategy F: remove overused transitions
-    if (cl.issues.includes('overused_transition')) {
-      const tp = TRANSITION_PATTERNS.find(p => p.re.test(s.toLowerCase().trim()));
-      if (tp && (transitionCounts[tp.label]||0) >= 2) {
-        const revised = strategyRemoveTransition(s, tp.label);
-        if (revised !== s) { s = revised; changeLog.transitionsRemoved++; changeCount++; }
+      // Strategy B: split long sentences
+      if (changeCount === 0 && cl.issues.includes('too_long')) {
+        const parts = strategySplitSentence(s);
+        if (parts.length > 1) {
+          result.push(...parts);
+          changeLog.sentencesSplit++;
+          totalEdited++;
+          i++;
+          continue;
+        }
       }
-    }
 
-    // Strategy E: vary repeated sentence opening
-    if (cl.issues.includes('repeated_opening') && occNum >= 1) {
-      const revised = strategyChangeOpening(s, occNum);
-      if (revised !== s) { s = revised; changeLog.openingsVaried++; changeCount++; }
-    }
+      // Strategy I: vary overused rhetorical formula (deep level: try vary first, then strip)
+      if (cl.issues.includes('overused_rhetorical')) {
+        const varied = strategyVaryRhetoricalFormula(s, rc, voiceProfile);
+        if (varied !== s) { s = varied; changeLog.rhetoricalRepairs++; changeCount++; }
+        else {
+          const stripped = strategyRemoveFillerOpener(s);
+          if (stripped !== s) { s = stripped; changeLog.rhetoricalRepairs++; changeCount++; }
+        }
+      }
 
-    // Strategy D: reduce overused words (active: minFreq=3, gap=2)
-    if (cl.issues.includes('overused_word') || cl.issues.includes('redundant_phrase')) {
-      const revised = strategyReduceRedundancy(s, wordFreq, lastReplacedAt, i, 3, 2);
-      if (revised !== s) { s = revised; changeLog.synonymsReplaced++; changeCount++; }
+      // Strategy G: reorder clauses (only MODERATE/STRONG and not short-emphasis)
+      if ((cl.tier === 'REVISE_MODERATE' || cl.tier === 'REVISE_STRONG') &&
+          cl.wc >= 12 && cl.wc <= 40) {
+        const revised = strategyReorderClauses(s);
+        if (revised !== s) { s = revised; changeCount++; }
+      }
+
+      // Strategy F: remove overused transitions (≥2×)
+      if (cl.issues.includes('overused_transition')) {
+        const tp = TRANSITION_PATTERNS.find(p => p.re.test(s.toLowerCase().trim()));
+        if (tp && (transitionCounts[tp.label]||0) >= 2) {
+          const revised = strategyRemoveTransition(s, tp.label);
+          if (revised !== s) { s = revised; changeLog.transitionsRemoved++; changeCount++; }
+        }
+      }
+
+      // Strategy E: vary repeated sentence opening
+      if (cl.issues.includes('repeated_opening') && occNum >= 1) {
+        const revised = strategyChangeOpening(s, occNum);
+        if (revised !== s) { s = revised; changeLog.openingsVaried++; changeCount++; }
+      }
+
+      // Strategy D: reduce UNNECESSARY overused words (active: minFreq=3, gap=2)
+      if (cl.issues.includes('overused_word') || cl.issues.includes('redundant_phrase')) {
+        const revised = strategyReduceRedundancy(s, wordFreq, lastReplacedAt, i, 3, 2, voiceProfile);
+        if (revised !== s) { s = revised; changeLog.synonymsReplaced++; changeCount++; }
+      }
+
+      if (changeCount > 0) totalEdited++;
     }
 
     if (changeCount === 0) changeLog.keptSentences++;
@@ -2703,68 +3336,25 @@ function checkSemanticPreservation(origText, revisedText) {
 }
 
 /* ──────────────────────────────────────────────────────────────────
-   HOLISTIC WRITING QUALITY SCORE
+   WRITING QUALITY SCORE — delegates to NWQI
    ────────────────────────────────────────────────────────────────── */
 
 /**
- * Compute a Natural Writing Quality Score (0–100) for a candidate.
+ * Compute the Writing Quality Score for a candidate.
  *
- * This is NOT an AI probability. It is a multi-dimensional quality index
- * for COMPARING candidates. Higher = better holistic writing quality.
+ * This now delegates to computeNWQI() for the full 8-dimension calculation.
+ * Maintained as a wrapper for backward API compatibility with callers that
+ * pass only (origAnalysis, candAnalysis, semanticResult).
  *
- * Dimensions:
- *   25 pts — Repetition control (lex + phrase)
- *   20 pts — Sentence rhythm (variation + burstiness)
- *   15 pts — Word-count stability (95–105% of original = max)
- *   15 pts — Vocabulary diversity improvement
- *   15 pts — Semantic preservation
- *   10 pts — No score regression (overall risk didn't worsen)
+ * voiceProfile is optional — if omitted, a minimal empty profile is used
+ * (signature terms = empty set, so no voice protection but function still runs).
  *
- * NOTE: overall risk score delta contributes only 10/100 pts.
- *       Writing quality is the primary signal.
+ * NOT displayed as "Human Score" or "AI Probability".
+ * Internal ranking metric only.
  */
-function computeWritingQualityScore(origAnalysis, candAnalysis, semanticResult) {
-  const v = {
-    lexDiff:    origAnalysis.features.lexicalRepetition.score  - candAnalysis.features.lexicalRepetition.score,
-    phraseDiff: origAnalysis.features.phraseRepetition.score   - candAnalysis.features.phraseRepetition.score,
-    unifDiff:   origAnalysis.features.sentenceUniformity.score - candAnalysis.features.sentenceUniformity.score,
-    burstDiff:  origAnalysis.features.burstiness.score         - candAnalysis.features.burstiness.score,
-    vocabDiff:  origAnalysis.features.vocabularyDiversity.score- candAnalysis.features.vocabularyDiversity.score,
-    overallDiff: origAnalysis.finalScore - candAnalysis.finalScore,
-  };
-  const wordRatio = candAnalysis.wordCount / Math.max(1, origAnalysis.wordCount);
-
-  // Dimension 1: Repetition control (25 pts)
-  const lexPts   = Math.max(0, Math.min(15, v.lexDiff * 2.5));   // >6 pt reduction = full 15
-  const phrasPts = Math.max(0, Math.min(10, v.phraseDiff * 2.0));
-  const d1 = lexPts + phrasPts;
-
-  // Dimension 2: Sentence rhythm (20 pts)
-  const unifPts  = Math.max(0, Math.min(12, v.unifDiff * 2.0));
-  const burstPts = Math.max(0, Math.min(8,  v.burstDiff * 1.5));
-  const d2 = unifPts + burstPts;
-
-  // Dimension 3: Word-count stability (15 pts)
-  // 0.95-1.05 = 15; 0.90-0.95 or 1.05-1.10 = 10; outside = penalty
-  let d3;
-  if (wordRatio >= 0.95 && wordRatio <= 1.05) d3 = 15;
-  else if (wordRatio >= 0.90 && wordRatio <= 1.10) d3 = 10;
-  else if (wordRatio >= 0.85 && wordRatio <= 1.15) d3 = 5;
-  else d3 = 0;
-
-  // Dimension 4: Vocabulary diversity (15 pts)
-  const d4 = Math.max(0, Math.min(15, v.vocabDiff * 2.5));
-
-  // Dimension 5: Semantic preservation (15 pts)
-  const d5 = semanticResult.preserved ? 15 : Math.round(15 * (1 - semanticResult.loss));
-
-  // Dimension 6: Risk score stability — didn't worsen (10 pts)
-  // Neutral = 5 pts (no change); improvement gives more; regression deducts
-  const d6 = v.overallDiff >= 0
-    ? Math.min(10, 5 + v.overallDiff * 0.5)
-    : Math.max(0, 5 + v.overallDiff * 0.8); // penalise regression more steeply
-
-  return Math.round(d1 + d2 + d3 + d4 + d5 + d6);
+function computeWritingQualityScore(origAnalysis, candAnalysis, semanticResult, voiceProfile) {
+  const vp = voiceProfile || { signatureTerms: new Set() };
+  return computeNWQI(origAnalysis, candAnalysis, semanticResult, vp);
 }
 
 /* ──────────────────────────────────────────────────────────────────
@@ -2773,34 +3363,68 @@ function computeWritingQualityScore(origAnalysis, candAnalysis, semanticResult) 
 
 /**
  * Validate whether a candidate revision improved the writing profile.
- * Also incorporates semantic preservation check.
- * Returns a score (higher = better) and a boolean pass/fail.
+ *
+ * Uses NWQI-aware healthy-range logic instead of pure direction-of-maximum.
+ * A candidate passes if it improves at least 2 meaningful dimensions
+ * WITHOUT causing significant regressions in semantics or word count.
+ *
+ * Rejection criteria (any one causes failure):
+ *   - Word count changed > 12% (too much rewriting)
+ *   - Lexical repetition increased significantly (worse, not better)
+ *   - Phrase repetition increased significantly
+ *   - Sentence variation deteriorated significantly
+ *
+ * @returns {{ score, passes, details, overallDiff, lexDiff, phraseDiff, unifDiff, burstDiff, vocabDiff }}
  */
 function validateImprovement(origAnalysis, candAnalysis) {
   let score = 0;
   const details = [];
 
-  const lexDiff   = origAnalysis.features.lexicalRepetition.score  - candAnalysis.features.lexicalRepetition.score;
-  const phraseDiff= origAnalysis.features.phraseRepetition.score   - candAnalysis.features.phraseRepetition.score;
-  const unifDiff  = origAnalysis.features.sentenceUniformity.score - candAnalysis.features.sentenceUniformity.score;
-  const burstDiff = origAnalysis.features.burstiness.score         - candAnalysis.features.burstiness.score;
-  const vocabDiff = origAnalysis.features.vocabularyDiversity.score- candAnalysis.features.vocabularyDiversity.score;
+  const lexDiff    = origAnalysis.features.lexicalRepetition.score  - candAnalysis.features.lexicalRepetition.score;
+  const phraseDiff = origAnalysis.features.phraseRepetition.score   - candAnalysis.features.phraseRepetition.score;
+  const unifDiff   = origAnalysis.features.sentenceUniformity.score - candAnalysis.features.sentenceUniformity.score;
+  const burstDiff  = origAnalysis.features.burstiness.score         - candAnalysis.features.burstiness.score;
+  const vocabDiff  = origAnalysis.features.vocabularyDiversity.score- candAnalysis.features.vocabularyDiversity.score;
   const overallDiff = origAnalysis.finalScore - candAnalysis.finalScore;
   const wordCountRatio = candAnalysis.wordCount / Math.max(1, origAnalysis.wordCount);
 
+  // Positive contributions — improvement in quality dimensions
   if (lexDiff >= 2)    { score += 1;   details.push('Repetisi leksikal berkurang'); }
   if (phraseDiff >= 2) { score += 1;   details.push('Repetisi frasa berkurang'); }
-  if (unifDiff >= 2)   { score += 1;   details.push('Keseragaman kalimat berkurang (variasi meningkat)'); }
+  if (unifDiff >= 2)   { score += 1;   details.push('Variasi panjang kalimat meningkat'); }
   if (burstDiff >= 2)  { score += 1;   details.push('Variasi ritme kalimat meningkat'); }
   if (vocabDiff >= 2)  { score += 0.5; details.push('Keragaman kosakata meningkat'); }
 
-  if (overallDiff < -3) { score -= 2; details.push('Skor risiko keseluruhan meningkat secara signifikan'); }
-  if (wordCountRatio > 1.12) { score -= 1; details.push('Jumlah kata meningkat lebih dari 12%'); }
-  if (lexDiff < -2)    { score -= 0.5; details.push('Repetisi leksikal meningkat'); }
-  if (phraseDiff < -2) { score -= 0.5; details.push('Repetisi frasa meningkat'); }
-  if (unifDiff < -2)   { score -= 0.5; details.push('Keseragaman kalimat meningkat (variasi berkurang)'); }
+  // Word count stability — reward staying close to original
+  if (wordCountRatio >= 0.95 && wordCountRatio <= 1.05) {
+    score += 0.5;
+    details.push('Jumlah kata stabil dalam rentang 95–105%');
+  }
 
-  const passes = score >= 0.5 && overallDiff >= -3;
+  // Rejection penalties — hard limits
+  // (Healthy-range: we don't penalise MODERATE risk increase if quality improved)
+  if (wordCountRatio > 1.12) {
+    score -= 1.5;
+    details.push('Jumlah kata meningkat lebih dari 12%');
+  }
+  if (wordCountRatio < 0.88) {
+    score -= 1;
+    details.push('Jumlah kata berkurang lebih dari 12%');
+  }
+  if (lexDiff < -3)    { score -= 1;   details.push('Repetisi leksikal meningkat signifikan'); }
+  if (phraseDiff < -3) { score -= 0.5; details.push('Repetisi frasa meningkat signifikan'); }
+  if (unifDiff < -3)   { score -= 0.5; details.push('Variasi kalimat berkurang signifikan'); }
+
+  // NWQI-aware: don't penalise based on overall risk score alone —
+  // only penalise if risk score worsened AND no quality metrics improved
+  const hasAnyQualityGain = lexDiff >= 2 || phraseDiff >= 2 || unifDiff >= 2 || burstDiff >= 2;
+  if (overallDiff < -5 && !hasAnyQualityGain) {
+    score -= 1;
+    details.push('Skor pola meningkat tanpa ada perbaikan kualitas terukur');
+  }
+
+  // Pass criteria: at least 2 positive contributions, no hard rejections
+  const passes = score >= 1.0 && wordCountRatio <= 1.12 && wordCountRatio >= 0.88;
 
   return { score, passes, details, overallDiff, lexDiff, phraseDiff, unifDiff, burstDiff, vocabDiff };
 }
@@ -2876,76 +3500,72 @@ function determineFailsafeState(candidates, ranking) {
 
 /**
  * Build human-readable change log entries from a candidate's changeLog counters.
+ * Reports only changes that actually happened (no fabricated statistics).
+ *
+ * Transparency principle: only real changes are reported.
+ * The "kept sentences" count is always shown to confirm minimum-edit behaviour.
  */
 function buildChangeMade(candidate) {
-  const cl = candidate.changeLog;
+  const cl  = candidate.changeLog;
   const out = [];
-  if (cl.synonymsReplaced > 0)
-    out.push(`${cl.synonymsReplaced} pengulangan kata dikurangi melalui variasi sinonim`);
+
+  // Actual edits — only show if count > 0
+  if (cl.editorialRepairs > 0)
+    out.push(`${cl.editorialRepairs} artefak penulisan diperbaiki (kata duplikat / batas kalimat)`);
+  if (cl.rhetoricalRepairs > 0)
+    out.push(`${cl.rhetoricalRepairs} formula retorika yang berulang divariasikan`);
   if (cl.transitionsRemoved > 0)
-    out.push(`${cl.transitionsRemoved} transisi berulang yang tidak perlu dihapus`);
+    out.push(`${cl.transitionsRemoved} transisi redundan dihapus (koneksi antar-kalimat sudah jelas)`);
   if (cl.openingsVaried > 0)
-    out.push(`${cl.openingsVaried} pembuka kalimat yang berulang divariasikan`);
+    out.push(`${cl.openingsVaried} pembuka kalimat berulang distrukturisasi ulang`);
+  if (cl.synonymsReplaced > 0)
+    out.push(`${cl.synonymsReplaced} pengulangan tidak perlu dikurangi dengan variasi kata`);
   if (cl.sentencesSplit > 0)
-    out.push(`${cl.sentencesSplit} kalimat terlalu panjang dipecah menjadi lebih pendek`);
+    out.push(`${cl.sentencesSplit} kalimat terlalu panjang dipecah pada batas sintaksis alami`);
   if (cl.sentencesCombined > 0)
-    out.push(`${cl.sentencesCombined} kalimat sangat pendek yang berdekatan digabungkan`);
+    out.push(`${cl.sentencesCombined} pasangan kalimat sangat pendek yang berdekatan digabungkan`);
+
+  // Preservation report — always shown
   if (cl.keptSentences > 0)
-    out.push(`${cl.keptSentences} kalimat dipertahankan tanpa perubahan`);
+    out.push(`${cl.keptSentences} kalimat dipertahankan tanpa perubahan (minimum-edit)`);
+
   return out;
 }
 
 /**
- * Main entry point for the Writing Improver v4 workflow.
+ * Main entry point for the Writing Improver v5 workflow.
  *
- * Pipeline: DIAGNOSE → TARGET → REVISE → RECHECK → RANK → SELECT
- *
- * Returns:
- *   {
- *     improvedText, changeMade, validation, usedOriginal,
- *     allCandidates,   // ranked array — always present
- *     ranking,         // same array (alias)
- *     failsafeState,   // 'validated' | 'mixed' | 'none'
- *     bestCandidateIdx // 0-based index into allCandidates of the top-ranked candidate
- *   }
- *
- * API integration point (future):
- * Replace generateCandidateMinimal/Balanced/Structural with LLM calls.
- * The classify → validate → rank loop is API-agnostic.
+ * Pipeline:
+ *   DIAGNOSE → VOICE PROFILE → TARGETED MICRO-EDIT →
+ *   SEMANTIC CHECK → STRUCTURAL CHECK → NWQI RECHECK →
+ *   CANDIDATE RANKING → USER REVIEW
  */
 function generateImprovedText(text, settings) {
+  // ── PRE-PROCESSING: repair gross editorial artifacts in the raw input ─────
+  const cleanedText = repairEditorialArtifacts(text);
+
   // ── DOCUMENT STRUCTURE PRESERVATION ─────────────────────────────────────
-  // Parse the full text into typed blocks BEFORE any rewriting.
-  // Only "paragraph" blocks enter the revision pipeline.
-  // title, author, heading, citation, quotation, bullet, numbered blocks are
-  // passed through UNCHANGED and reassembled afterwards.
-  const origDoc = parseDocument(text);
-
-  // Extract only paragraph blocks for analysis (order-preserving)
+  const origDoc = parseDocument(cleanedText);
   const paragraphBlocks = origDoc.blocks.filter(b => b.type === 'paragraph');
-
-  // If no paragraph blocks were found, fall back to the full text as one paragraph
   const analysisText = paragraphBlocks.length > 0
     ? paragraphBlocks.map(b => b.content).join('\n\n')
-    : text;
+    : cleanedText;
 
   // Build global word frequency from PROSE CONTENT ONLY
   const words    = getWords(analysisText);
   const wordFreq = {};
   words.forEach(w => { wordFreq[w] = (wordFreq[w] || 0) + 1; });
 
-  // analyzeText() operates on the full text so sentence/word stats are correct
-  const origAnalysis = analyzeText(text);
+  const origAnalysis = analyzeText(cleanedText);
 
-  // ── DIAGNOSE: sentences across all paragraphs (for global classification) ─
-  // getSentences() is called per-paragraph so newlines are NOT collapsed globally.
+  // ── VOICE PROFILE — built from all prose sentences ───────────────────────
   const allSentences = paragraphBlocks.length > 0
     ? paragraphBlocks.flatMap(b => getSentences(b.content))
-    : getSentences(text);
+    : getSentences(cleanedText);
 
-  const classification = classifySentences(allSentences, wordFreq);
+  const voiceProfile = buildAuthorVoiceProfile(allSentences);
 
-  // ── Build transition count map (global, across all paragraphs) ───────────
+  // ── Build transition count map ────────────────────────────────────────────
   const transitionCounts = {};
   allSentences.forEach(s => {
     const s_lc = s.toLowerCase().trim();
@@ -2954,31 +3574,38 @@ function generateImprovedText(text, settings) {
     });
   });
 
+  // ── Build rhetorical pattern count map ───────────────────────────────────
+  const rhetoricalCounts = {};
+  allSentences.forEach(s => {
+    RHETORICAL_PATTERNS.forEach(rp => {
+      if (rp.re.test(s.trim())) rhetoricalCounts[rp.label] = (rhetoricalCounts[rp.label]||0) + 1;
+    });
+  });
+
+  // ── DIAGNOSE — classify sentences using voiceProfile + rhetoricalCounts ──
+  const classification = classifySentences(allSentences, wordFreq, voiceProfile, rhetoricalCounts);
+
   // ── Helper: rewrite paragraph blocks using a candidate generator ──────────
-  // Each generator receives the per-paragraph sentence array.
-  // Returns the full reconstructed document text (structure preserved).
+  // voiceProfile + rhetoricalCounts are passed to every generator.
   const rewriteWithGenerator = (genFn) => {
-    let sentIdx = 0; // global sentence index into allSentences / classification
+    let sentIdx = 0;
     const combinedChangeLog = { synonymsReplaced: 0, transitionsRemoved: 0,
-      openingsVaried: 0, sentencesSplit: 0, sentencesCombined: 0, keptSentences: 0 };
+      openingsVaried: 0, sentencesSplit: 0, sentencesCombined: 0, keptSentences: 0,
+      rhetoricalRepairs: 0, editorialRepairs: 0 };
 
     const newBlocks = origDoc.blocks.map(block => {
-      // Non-paragraph blocks pass through unchanged
       if (block.type !== 'paragraph') return { ...block };
 
-      // Get the sentences for THIS paragraph only
-      const paraSentences    = getSentences(block.content);
-      const paraClassif      = classification.slice(sentIdx, sentIdx + paraSentences.length);
+      const paraSentences = getSentences(block.content);
+      const paraClassif   = classification.slice(sentIdx, sentIdx + paraSentences.length);
       sentIdx += paraSentences.length;
 
       if (paraSentences.length === 0) return { ...block };
 
-      // Run the generator on this paragraph's sentences
       const { text: revisedPara, changeLog } = genFn(
-        paraSentences, paraClassif, wordFreq, transitionCounts
+        paraSentences, paraClassif, wordFreq, transitionCounts, voiceProfile, rhetoricalCounts
       );
 
-      // Accumulate change log
       Object.keys(combinedChangeLog).forEach(k => {
         if (changeLog[k] !== undefined) combinedChangeLog[k] += changeLog[k];
       });
@@ -2986,7 +3613,6 @@ function generateImprovedText(text, settings) {
       return { type: 'paragraph', content: revisedPara };
     });
 
-    // Reconstruct the full document text
     const candDoc  = { title: origDoc.title, author: origDoc.author, blocks: newBlocks };
     const candText = reconstructDocumentText(candDoc);
     return { text: candText, changeLog: combinedChangeLog, document: candDoc };
@@ -3003,8 +3629,9 @@ function generateImprovedText(text, settings) {
     const { text: candText, changeLog, document: candDoc } = rewriteWithGenerator(gen.fn);
     const candAnalysis = analyzeText(candText);
     const validation   = validateImprovement(origAnalysis, candAnalysis);
-    const semantic     = checkSemanticPreservation(text, candText);
-    const qualityIndex = computeWritingQualityScore(origAnalysis, candAnalysis, semantic);
+    const semantic     = checkSemanticPreservation(cleanedText, candText);
+    // Pass voiceProfile to NWQI for voice-preservation dimension
+    const qualityIndex = computeWritingQualityScore(origAnalysis, candAnalysis, semantic, voiceProfile);
     return {
       text: candText, document: candDoc, analysis: candAnalysis, validation,
       changeLog, strategy: gen.label, semantic, qualityIndex,
@@ -3026,7 +3653,7 @@ function generateImprovedText(text, settings) {
   if (!bestValidated) {
     const bestCandidateIdx = topRanked ? topRanked.candNum - 1 : 0;
     return {
-      improvedText:     text,
+      improvedText:     cleanedText,
       origDocument:     origDoc,
       changeMade:       [],
       validation:       null,
@@ -3368,6 +3995,14 @@ let _improvedDocument = null;
 let _formatMode       = 'document'; // default to document view
 
 /**
+ * Educational diff state — structured changes + navigation cursor.
+ * _currentChanges : Array<ChangeRecord> from computeChanges()
+ * _learnNavIdx    : currently focused change index (0-based)
+ */
+let _currentChanges = null;
+let _learnNavIdx    = 0;
+
+/**
  * Switch all visible text panels between document-view and plaintext-view.
  * Called from the format toggle buttons.
  */
@@ -3437,10 +4072,14 @@ function initViewTabs() {
       tab.classList.add('active');
       tab.setAttribute('aria-selected', 'true');
       const viewName = tab.dataset.view;
-      ['view-original', 'view-improved', 'view-compare'].forEach(id => {
+      ['view-original', 'view-improved', 'view-compare', 'view-learn'].forEach(id => {
         const el = $(id);
         if (el) el.classList.toggle('hidden', id !== 'view-' + viewName);
       });
+      // When switching to learn tab, render if data available
+      if (viewName === 'learn' && _currentChanges && _improvedDocument) {
+        renderLearnView(_origDocument, _improvedDocument, _currentChanges);
+      }
     });
   });
 }
@@ -3861,6 +4500,11 @@ function acceptCandidate() {
   renderComparisonCharts(origAnalysis, candAnalysis);
   $('comparisonCard').classList.remove('hidden');
 
+  // ── Educational diff + learning panel ────────────────────
+  _currentChanges = computeChanges(origDoc, impDoc, cand);
+  _learnNavIdx    = 0;
+  renderLearningPanel(_currentChanges, origAnalysis.text, candText);
+
   // Persist to history — includes all 3 candidates
   if (currentAnalysis) {
     updateHistoryWithImprovement(currentAnalysis.timestamp, {
@@ -3870,6 +4514,7 @@ function acceptCandidate() {
       allCandidates:    _allCandidates,
       chosenCandidateIdx: _chosenCandidateIdx,
       failsafeState:    _failsafeState,
+      educationalChanges: _currentChanges,
     });
   }
 
@@ -4016,6 +4661,11 @@ async function runImproverPass(inputText, origAnalysis, isSecondPass) {
     renderComparisonCharts(origAnalysis, improvedAnalysis);
     $('comparisonCard').classList.remove('hidden');
 
+    // ── Educational diff + learning panel ────────────────────
+    _currentChanges = computeChanges(origDocForPanel, impDocForPanel, bestCand);
+    _learnNavIdx    = 0;
+    renderLearningPanel(_currentChanges, origAnalysis.text, improvedText);
+
     // Persist to history — include all 3 candidates
     if (currentAnalysis) {
       updateHistoryWithImprovement(currentAnalysis.timestamp, {
@@ -4025,6 +4675,7 @@ async function runImproverPass(inputText, origAnalysis, isSecondPass) {
         allCandidates,
         chosenCandidateIdx: bestCandidateIdx,
         failsafeState,
+        educationalChanges: _currentChanges,
       });
     }
 
@@ -4087,6 +4738,11 @@ function resetImprover() {
   _failsafeState        = null;
   _origDocument         = null;
   _improvedDocument     = null;
+  _currentChanges       = null;
+  _learnNavIdx          = 0;
+  hideChangePopup();
+  const learningPanel = $('learningPanel');
+  if (learningPanel) learningPanel.classList.add('hidden');
   const structStatus = $('structureStatus');
   if (structStatus) structStatus.style.display = 'none';
 
@@ -4276,7 +4932,8 @@ function applyEditorSuggestions(sugIds) {
     });
   });
 
-  const classification = classifySentences(sentences, wordFreq);
+  const voiceProfile   = buildAuthorVoiceProfile(sentences);
+  const classification = classifySentences(sentences, wordFreq, voiceProfile);
   const lastReplacedAt = {};
   const openingOccurrences = {};
   const changeLog = { synonymsReplaced:0, transitionsRemoved:0, openingsVaried:0,
@@ -4317,7 +4974,7 @@ function applyEditorSuggestions(sugIds) {
       if (rev !== s) { s = rev; changeLog.openingsVaried++; }
     }
     if (wordSugs.length > 0) {
-      const rev = strategyReduceRedundancy(s, wordFreq, lastReplacedAt, i, 3, 2);
+      const rev = strategyReduceRedundancy(s, wordFreq, lastReplacedAt, i, 3, 2, voiceProfile);
       if (rev !== s) { s = rev; changeLog.synonymsReplaced++; }
     }
 
@@ -4388,6 +5045,714 @@ function openEditorMode() {
 /* ============================================================
    INIT EXTENSION — all new feature event handlers
    ============================================================ */
+/* ============================================================
+   MODULE: EDUCATIONAL DIFF ENGINE
+   Computes word-level changes between original and improved text,
+   builds structured ChangeRecord objects, renders yellow highlights,
+   and generates educational explanations.
+   ============================================================ */
+
+/**
+ * Simple word-level LCS diff between two sentences.
+ * Returns array of ops: { type: 'eq'|'del'|'ins', text: string }
+ *
+ * @param {string} a  original sentence
+ * @param {string} b  improved sentence
+ * @returns {Array<{type,text}>}
+ */
+function lcsWordDiff(a, b) {
+  const tokA = tokenizeForDiff(a);
+  const tokB = tokenizeForDiff(b);
+  const na = tokA.length, nb = tokB.length;
+
+  // DP table for LCS lengths
+  const dp = Array.from({length: na + 1}, () => new Int16Array(nb + 1));
+  for (let i = na - 1; i >= 0; i--) {
+    for (let j = nb - 1; j >= 0; j--) {
+      if (tokA[i].toLowerCase() === tokB[j].toLowerCase()) {
+        dp[i][j] = dp[i+1][j+1] + 1;
+      } else {
+        dp[i][j] = Math.max(dp[i+1][j], dp[i][j+1]);
+      }
+    }
+  }
+
+  // Trace back
+  const ops = [];
+  let i = 0, j = 0;
+  while (i < na && j < nb) {
+    if (tokA[i].toLowerCase() === tokB[j].toLowerCase()) {
+      ops.push({ type: 'eq', text: tokB[j] });
+      i++; j++;
+    } else if (dp[i+1][j] >= dp[i][j+1]) {
+      ops.push({ type: 'del', text: tokA[i] });
+      i++;
+    } else {
+      ops.push({ type: 'ins', text: tokB[j] });
+      j++;
+    }
+  }
+  while (i < na) { ops.push({ type: 'del', text: tokA[i] }); i++; }
+  while (j < nb) { ops.push({ type: 'ins', text: tokB[j] }); j++; }
+  return ops;
+}
+
+/**
+ * Tokenize a sentence into a flat list of alternating word + punctuation/space tokens.
+ * Keeps spaces so reconstruction is lossless.
+ */
+function tokenizeForDiff(text) {
+  return text.match(/[\w\u00C0-\u024F]+|[^\w\u00C0-\u024F]+/g) || [];
+}
+
+/**
+ * Map a changeLog strategy label to an educational category.
+ * Returns { id, label }
+ */
+function categorizeChange(strategy, issues) {
+  issues = issues || [];
+
+  if (issues.includes('editorial_artifact'))   return { id: 'grammar',    label: 'TATA BAHASA' };
+  if (issues.includes('overused_rhetorical'))  return { id: 'clarity',    label: 'KEJELASAN' };
+  if (issues.includes('overused_transition'))  return { id: 'transition', label: 'TRANSISI' };
+  if (issues.includes('repeated_opening'))     return { id: 'variation',  label: 'VARIASI KALIMAT' };
+  if (issues.includes('too_long'))             return { id: 'density',    label: 'KEPADATAN' };
+  if (issues.includes('uniform_cluster'))      return { id: 'variation',  label: 'VARIASI KALIMAT' };
+  if (issues.includes('overused_word'))        return { id: 'repetition', label: 'REPETISI' };
+  if (issues.includes('redundant_phrase'))     return { id: 'repetition', label: 'REPETISI' };
+  if (issues.includes('too_short'))            return { id: 'structure',  label: 'STRUKTUR KALIMAT' };
+
+  // Fallback: infer from strategy label
+  if (strategy === 'remove_transition')  return { id: 'transition', label: 'TRANSISI' };
+  if (strategy === 'change_opening')     return { id: 'variation',  label: 'VARIASI KALIMAT' };
+  if (strategy === 'reduce_word')        return { id: 'repetition', label: 'REPETISI' };
+  if (strategy === 'split_sentence')     return { id: 'density',    label: 'KEPADATAN' };
+  if (strategy === 'combine_sentences')  return { id: 'structure',  label: 'STRUKTUR KALIMAT' };
+  if (strategy === 'reorder_clauses')    return { id: 'flow',       label: 'ALUR ARGUMEN' };
+  if (strategy === 'rhetorical_repair')  return { id: 'clarity',    label: 'KEJELASAN' };
+  if (strategy === 'editorial_repair')   return { id: 'grammar',    label: 'TATA BAHASA' };
+
+  return { id: 'word_choice', label: 'PILIHAN KATA' };
+}
+
+/**
+ * Generate a structured educational explanation for a change.
+ * Returns { masalah, perbaikan, alasan, pelajaran, category }
+ */
+function buildChangeExplanation(change) {
+  const cat = categorizeChange(change.strategy, change.issues);
+  const orig = change.original;
+  const rev  = change.revised;
+
+  const templates = {
+    variation: {
+      masalah:   'Kalimat ini memiliki pola pembuka yang sama dengan kalimat lain di sekitarnya.',
+      perbaikan: 'Struktur pembuka kalimat diubah agar berbeda dari kalimat-kalimat sebelumnya.',
+      alasan:    'Pola pembuka yang seragam menciptakan ritme yang mekanik dan mudah diprediksi.',
+      pelajaran: 'Variasikan cara memulai kalimat — alihkan fokus dari subjek, atau mulai dari keterangan waktu/kondisi.',
+    },
+    repetition: {
+      masalah:   'Kata atau frasa tertentu muncul terlalu sering dalam teks.',
+      perbaikan: 'Satu kemunculan kata yang berulang diganti dengan sinonim yang sesuai konteks.',
+      alasan:    'Pengulangan kata non-teknis yang berlebihan mengurangi kekayaan kosakata.',
+      pelajaran: 'Setelah selesai menulis, identifikasi kata yang sering muncul dan pertimbangkan apakah perlu divariasikan — kecuali istilah teknis yang memang harus konsisten.',
+    },
+    transition: {
+      masalah:   orig
+        ? `Transisi "${orig}" digunakan lebih dari sekali dalam teks ini.`
+        : 'Kata penghubung yang sama digunakan berulang kali.',
+      perbaikan: 'Penanda transisi yang redundan dihapus karena hubungan antar kalimat sudah cukup jelas.',
+      alasan:    'Transisi berulang membuat tulisan terdengar formulaik. Tulisan akademik yang baik tidak memerlukan penanda koneksi di setiap kalimat.',
+      pelajaran: 'Jangan gunakan konektor yang sama di awal setiap kalimat. Hubungan logis antaride seringkali sudah tersampaikan tanpa transisi eksplisit.',
+    },
+    density: {
+      masalah:   'Kalimat ini terlalu panjang sehingga sulit diikuti sekaligus.',
+      perbaikan: 'Kalimat dipecah menjadi dua kalimat yang lebih pendek di titik konjungsi alami.',
+      alasan:    'Kalimat pendek-sedang (15–28 kata) lebih mudah dibaca dan dipahami.',
+      pelajaran: 'Jika sebuah kalimat memiliki lebih dari satu gagasan utama, pertimbangkan untuk memisahkannya.',
+    },
+    structure: {
+      masalah:   'Beberapa kalimat pendek yang berdekatan menciptakan ritme yang terputus-putus.',
+      perbaikan: 'Dua kalimat sangat pendek yang berurutan digabungkan untuk memperbaiki alur.',
+      alasan:    'Variasi panjang kalimat — pendek dan panjang bergantian — menciptakan ritme yang lebih natural.',
+      pelajaran: 'Perhatikan pola panjang kalimat. Tulisan yang baik memiliki variasi: beberapa kalimat pendek dan beberapa kalimat lebih panjang.',
+    },
+    clarity: {
+      masalah:   'Pembuka kalimat ini menggunakan frasa formula yang sudah dipakai berulang kali.',
+      perbaikan: 'Frasa pembuka yang formulaik diubah atau dihilangkan.',
+      alasan:    'Formula seperti "Hal ini menunjukkan bahwa..." yang berulang membuat argumen terasa kurang langsung.',
+      pelajaran: 'Setelah selesai menulis, periksa apakah ada frasa pembuka yang digunakan terlalu sering. Tidak setiap kalimat perlu "pengantar" eksplisit.',
+    },
+    grammar: {
+      masalah:   'Terdapat duplikasi kata atau batas kalimat yang tidak terbentuk dengan benar.',
+      perbaikan: 'Kata yang terduplikasi atau batas yang terputus diperbaiki.',
+      alasan:    'Duplikasi kata adalah kesalahan tulis yang mengganggu keterbacaan.',
+      pelajaran: 'Selalu lakukan proofreading akhir untuk mencari kata yang terduplikat atau kalimat yang tidak lengkap.',
+    },
+    flow: {
+      masalah:   'Klausa subordinat di akhir kalimat membuat pembaca harus menunggu terlalu lama.',
+      perbaikan: 'Klausa kondisional atau sebab-akibat dipindahkan ke bagian awal kalimat.',
+      alasan:    'Memulai dengan konteks atau kondisi membantu pembaca memahami isi kalimat lebih cepat.',
+      pelajaran: 'Coba variasikan posisi klausa kondisional: kadang di awal, kadang di akhir kalimat.',
+    },
+    word_choice: {
+      masalah:   'Pilihan kata pada bagian ini dapat diperjelas atau divariasikan.',
+      perbaikan: 'Frasa atau kata diubah untuk meningkatkan kejelasan atau variasi.',
+      alasan:    'Pilihan kata yang tepat meningkatkan presisi dan daya baca.',
+      pelajaran: 'Tinjau pilihan kata setelah menulis — pastikan setiap kata membawa makna yang tepat.',
+    },
+  };
+
+  const t = templates[cat.id] || templates.word_choice;
+  return {
+    masalah:   t.masalah,
+    perbaikan: t.perbaikan,
+    alasan:    t.alasan,
+    pelajaran: t.pelajaran,
+    category:  cat,
+  };
+}
+
+/**
+ * Determine change magnitude label.
+ * @param {string} type  'word'|'phrase'|'sentence'|'structural'
+ */
+function changeMagnitudeLabel(type) {
+  switch (type) {
+    case 'word':       return 'Perubahan Mikro';
+    case 'phrase':     return 'Perubahan Frasa';
+    case 'sentence':   return 'Perubahan Kalimat';
+    case 'structural': return 'Perubahan Struktural';
+    default:           return 'Perubahan';
+  }
+}
+
+/**
+ * Compute structured changes between original and improved text.
+ * Compares at sentence level; within each sentence pair compares at word level.
+ *
+ * Returns Array<ChangeRecord>:
+ * {
+ *   id, type, category, original, revised, explanation,
+ *   paraIdx, sentIdx, domId,
+ *   issues, strategy, magnitude
+ * }
+ *
+ * @param {object} origDoc  — parsed document
+ * @param {object} impDoc   — parsed document
+ * @param {object} candidate — from _allCandidates (has changeLog)
+ * @returns {Array}
+ */
+function computeChanges(origDoc, impDoc, candidate) {
+  if (!origDoc || !impDoc) return [];
+  const changes = [];
+  let changeId = 0;
+
+  const origParas = origDoc.blocks.filter(b => b.type === 'paragraph');
+  const impParas  = impDoc.blocks.filter(b => b.type === 'paragraph');
+  const cl = candidate?.changeLog || {};
+
+  for (let pi = 0; pi < Math.min(origParas.length, impParas.length); pi++) {
+    const origSents = getSentences(origParas[pi].content);
+    const impSents  = getSentences(impParas[pi].content);
+
+    // Paragraph-level: detect if sentence count changed (structural)
+    const structuralChange = Math.abs(origSents.length - impSents.length) > 0;
+
+    // Align sentences (simple positional pairing)
+    const pairCount = Math.max(origSents.length, impSents.length);
+    for (let si = 0; si < pairCount; si++) {
+      const origS = origSents[si] || '';
+      const impS  = impSents[si]  || '';
+
+      if (!origS && !impS) continue;
+
+      // No change — skip
+      if (origS.trim() === impS.trim()) continue;
+
+      // New sentence appeared (structural split produced extra)
+      if (!origS && impS) {
+        changes.push({
+          id: `c${changeId++}`,
+          type: 'sentence',
+          magnitude: 'structural',
+          paraIdx: pi,
+          sentIdx: si,
+          domId: `chg-p${pi}-s${si}`,
+          original: '',
+          revised: impS,
+          issues: ['too_long'],
+          strategy: 'split_sentence',
+          explanation: buildChangeExplanation({ strategy: 'split_sentence', issues: ['too_long'], original: '', revised: impS }),
+        });
+        continue;
+      }
+
+      // Sentence was removed / combined
+      if (origS && !impS) continue; // deletion handled silently — the next sentence absorbs it
+
+      // Compute word-level diff
+      const ops = lcsWordDiff(origS, impS);
+      const delTokens = ops.filter(o => o.type === 'del').map(o => o.text.trim()).filter(t => t && /\w/.test(t));
+      const insTokens = ops.filter(o => o.type === 'ins').map(o => o.text.trim()).filter(t => t && /\w/.test(t));
+
+      if (delTokens.length === 0 && insTokens.length === 0) continue;
+
+      // Determine issues from analysis of original sentence
+      const issues = inferIssuesFromSentence(origS, origSents, si);
+
+      // Determine change magnitude
+      const totalTokens = tokenizeForDiff(origS).filter(t => /\w/.test(t)).length;
+      const changedFrac = Math.max(delTokens.length, insTokens.length) / Math.max(1, totalTokens);
+      let magnitude;
+      if (structuralChange) {
+        magnitude = 'structural';
+      } else if (changedFrac >= 0.5) {
+        magnitude = 'sentence';
+      } else if (Math.max(delTokens.length, insTokens.length) <= 3) {
+        magnitude = 'word';
+      } else {
+        magnitude = 'phrase';
+      }
+
+      // Determine strategy from issues
+      const strategy = inferStrategy(issues, delTokens, insTokens);
+
+      const explanation = buildChangeExplanation({ strategy, issues, original: delTokens.join(' '), revised: insTokens.join(' ') });
+
+      changes.push({
+        id: `c${changeId++}`,
+        type: magnitude === 'structural' ? 'structural' : magnitude === 'sentence' ? 'sentence' : magnitude === 'phrase' ? 'phrase' : 'word',
+        magnitude,
+        paraIdx: pi,
+        sentIdx: si,
+        domId: `chg-p${pi}-s${si}`,
+        original: origS,
+        revised:  impS,
+        removedWords: delTokens,
+        addedWords:   insTokens,
+        issues,
+        strategy,
+        explanation,
+        ops,  // retain for precise highlighting
+      });
+    }
+  }
+
+  return changes;
+}
+
+/**
+ * Infer likely writing issues from a sentence using simple heuristics.
+ * Used when we don't have per-sentence metadata from the generator.
+ */
+function inferIssuesFromSentence(sentence, allSentences, idx) {
+  const issues = [];
+  const wc = sentence.split(/\s+/).filter(w=>w).length;
+  const lc = sentence.toLowerCase().trim();
+
+  if (wc > 35) issues.push('too_long');
+  if (wc >= 2 && wc <= 7) issues.push('too_short');
+
+  const fw = sentence.trim().split(/\s+/)[0]?.toLowerCase() || '';
+  if (fw && !STOP_WORDS.has(fw)) {
+    const openCount = allSentences.filter(s =>
+      s.trim().split(/\s+/)[0]?.toLowerCase() === fw
+    ).length;
+    if (openCount >= 3) issues.push('repeated_opening');
+  }
+
+  const tp = TRANSITION_PATTERNS.find(p => p.re.test(lc));
+  if (tp) {
+    const tCount = allSentences.filter(s => tp.re.test(s.toLowerCase().trim())).length;
+    if (tCount >= 2) issues.push('overused_transition');
+  }
+
+  const rp = RHETORICAL_PATTERNS.find(p => p.re.test(sentence.trim()));
+  if (rp) {
+    const rCount = allSentences.filter(s => rp.re.test(s.trim())).length;
+    if (rCount >= rp.minCount) issues.push('overused_rhetorical');
+  }
+
+  return issues;
+}
+
+/**
+ * Infer strategy from issues + changed tokens.
+ */
+function inferStrategy(issues, delTokens, insTokens) {
+  if (issues.includes('editorial_artifact'))  return 'editorial_repair';
+  if (issues.includes('overused_rhetorical')) return 'rhetorical_repair';
+  if (issues.includes('overused_transition')) return 'remove_transition';
+  if (issues.includes('too_long'))            return 'split_sentence';
+  if (issues.includes('too_short'))           return 'combine_sentences';
+  if (issues.includes('repeated_opening'))    return 'change_opening';
+  if (issues.includes('overused_word'))       return 'reduce_word';
+  // If deleted tokens look like a transition, classify as such
+  const delStr = delTokens.join(' ').toLowerCase();
+  if (TRANSITION_PATTERNS.some(tp => tp.re.test(delStr))) return 'remove_transition';
+  return 'word_choice';
+}
+
+/**
+ * Build highlighted HTML for one paragraph's text, given the change ops for each sentence.
+ *
+ * @param {string}  paraText  original paragraph content
+ * @param {Array}   changes   ChangeRecord array filtered to this paragraph
+ * @param {number}  paraIdx
+ * @returns {string}  HTML string with <mark> spans for changes
+ */
+function buildHighlightedParagraphHtml(paraText, paraChanges, paraIdx) {
+  const sentences = getSentences(paraText);
+  if (sentences.length === 0) return escapeHtml(paraText);
+
+  const parts = [];
+  for (let si = 0; si < sentences.length; si++) {
+    const change = paraChanges.find(c => c.sentIdx === si);
+    if (!change || !change.ops) {
+      // Unchanged sentence — render plain
+      parts.push(escapeHtml(sentences[si]));
+    } else {
+      // Changed sentence — render word-level diff
+      parts.push(buildHighlightedSentenceHtml(change));
+    }
+  }
+  return parts.join(' ');
+}
+
+/**
+ * Build highlighted HTML for one changed sentence.
+ * Wraps inserted/modified words in <mark> spans.
+ */
+function buildHighlightedSentenceHtml(change) {
+  // Collect groups of consecutive 'ins' or 'eq' ops
+  // Wrap consecutive 'ins' tokens in a single <mark>
+  const exp = change.explanation;
+  const cat = exp ? exp.category : { id: 'word_choice', label: 'PILIHAN KATA' };
+  const mag = changeMagnitudeLabel(change.magnitude);
+  const dataAttrs = `data-chg-id="${change.id}" data-para="${change.paraIdx}" data-sent="${change.sentIdx}"`;
+
+  if (!change.ops || change.ops.length === 0) {
+    // Full sentence change — wrap entire revised sentence
+    return `<mark class="chg-mark chg-${cat.id}" ${dataAttrs} tabindex="0" role="button" aria-label="Perubahan: ${escapeHtml(mag)}">${escapeHtml(change.revised)}</mark>`;
+  }
+
+  let html = '';
+  let insBuffer = '';
+  let insStart = false;
+
+  const flushIns = () => {
+    if (insBuffer) {
+      html += `<mark class="chg-mark chg-${cat.id}" ${dataAttrs} tabindex="0" role="button" aria-label="Perubahan: ${escapeHtml(mag)}">${escapeHtml(insBuffer.trim())}</mark>`;
+      insBuffer = '';
+      insStart = false;
+    }
+  };
+
+  for (const op of change.ops) {
+    if (op.type === 'del') {
+      // Skip deleted tokens (they don't appear in improved text)
+      continue;
+    } else if (op.type === 'ins') {
+      // Accumulate inserted tokens for one highlight span
+      insBuffer += (insStart ? op.text : op.text);
+      insStart = true;
+    } else {
+      // Equal token — flush any pending insertion first
+      flushIns();
+      html += escapeHtml(op.text);
+    }
+  }
+  flushIns();
+
+  return html;
+}
+
+/**
+ * Render the improved document with yellow highlights into a container.
+ *
+ * @param {object}      impDoc      parsed improved document
+ * @param {Array}       changes     from computeChanges()
+ * @param {HTMLElement} containerEl
+ */
+function renderHighlightedPanel(impDoc, changes, containerEl) {
+  if (!containerEl || !impDoc) return;
+
+  const parts = impDoc.blocks.map((block, bi) => {
+    const text = escapeHtml(block.content);
+    if (block.type !== 'paragraph') {
+      // Non-paragraph blocks are passed through unchanged (no highlights on title/author/etc.)
+      switch (block.type) {
+        case 'title':     return `<p class="doc-block doc-title">${text}</p>`;
+        case 'author':    return `<p class="doc-block doc-author">${text}</p>`;
+        case 'heading':   return `<p class="doc-block doc-heading">${text}</p>`;
+        case 'quotation': return `<blockquote class="doc-block doc-quotation">${text}</blockquote>`;
+        case 'bullet':    return `<p class="doc-block doc-bullet">${text}</p>`;
+        case 'numbered':  return `<p class="doc-block doc-numbered">${text}</p>`;
+        case 'citation':  return `<p class="doc-block doc-citation">${text}</p>`;
+        case 'separator': return `<hr class="doc-separator" />`;
+        case 'empty-line':return `<div class="doc-spacer"></div>`;
+        default:          return `<p class="doc-block doc-paragraph">${text}</p>`;
+      }
+    }
+
+    // Paragraph: find its index among paragraphs
+    const paragraphBlocks = impDoc.blocks.filter(b => b.type === 'paragraph');
+    const paraIdx = paragraphBlocks.indexOf(block);
+    const paraChanges = changes.filter(c => c.paraIdx === paraIdx);
+
+    let innerHtml;
+    if (paraChanges.length === 0) {
+      innerHtml = text;
+    } else {
+      innerHtml = buildHighlightedParagraphHtml(block.content, paraChanges, paraIdx);
+    }
+    return `<p class="doc-block doc-paragraph">${innerHtml}</p>`;
+  });
+
+  containerEl.innerHTML = parts.join('');
+
+  // Attach click handlers to all change marks
+  containerEl.querySelectorAll('.chg-mark').forEach(mark => {
+    const id = mark.dataset.chgId;
+    mark.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const change = changes.find(c => c.id === id);
+      if (change) showChangePopup(change, mark);
+    });
+    mark.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        const change = changes.find(c => c.id === id);
+        if (change) showChangePopup(change, mark);
+      }
+    });
+  });
+}
+
+/**
+ * Show the change explanation popup anchored near a clicked mark element.
+ */
+function showChangePopup(change, anchorEl) {
+  const popup  = $('changePopup');
+  const body   = $('changePopupBody');
+  if (!popup || !body) return;
+
+  const exp = change.explanation;
+  const cat = exp.category;
+  const mag = changeMagnitudeLabel(change.magnitude);
+
+  const removedHtml = (change.removedWords && change.removedWords.length > 0)
+    ? `<div class="cpp-row cpp-removed"><span class="cpp-label">Dihapus:</span> <span class="cpp-removed-text">"${escapeHtml(change.removedWords.join(' '))}"</span></div>`
+    : '';
+  const addedHtml = (change.addedWords && change.addedWords.length > 0)
+    ? `<div class="cpp-row cpp-added"><span class="cpp-label">Ditambahkan:</span> <span class="cpp-added-text">"${escapeHtml(change.addedWords.join(' '))}"</span></div>`
+    : '';
+
+  body.innerHTML = `
+    <div class="cpp-header">
+      <span class="cpp-cat-badge cpp-cat-${cat.id}">[${escapeHtml(cat.label)}]</span>
+      <span class="cpp-mag">${escapeHtml(mag)}</span>
+    </div>
+    ${removedHtml}${addedHtml}
+    <div class="cpp-section"><span class="cpp-label">Masalah:</span><br>${escapeHtml(exp.masalah)}</div>
+    <div class="cpp-section"><span class="cpp-label">Perbaikan:</span><br>${escapeHtml(exp.perbaikan)}</div>
+    <div class="cpp-section"><span class="cpp-label">Alasan:</span><br>${escapeHtml(exp.alasan)}</div>
+    <div class="cpp-section cpp-lesson"><span class="cpp-label">Pelajaran:</span><br>${escapeHtml(exp.pelajaran)}</div>`;
+
+  popup.classList.remove('hidden');
+
+  // Position popup near anchor
+  const rect = anchorEl.getBoundingClientRect();
+  const scrollY = window.scrollY || document.documentElement.scrollTop;
+  const scrollX = window.scrollX || document.documentElement.scrollLeft;
+  const popupW = 320;
+  let left = rect.left + scrollX;
+  let top  = rect.bottom + scrollY + 8;
+  // Clamp to viewport
+  if (left + popupW > window.innerWidth + scrollX - 16) {
+    left = window.innerWidth + scrollX - popupW - 16;
+  }
+  if (left < scrollX + 8) left = scrollX + 8;
+  popup.style.left = left + 'px';
+  popup.style.top  = top + 'px';
+  popup.style.position = 'absolute';
+
+  // Store current change id for navigation sync
+  _learnNavIdx = _currentChanges ? _currentChanges.findIndex(c => c.id === change.id) : 0;
+  updateLearnNavCounter();
+}
+
+/**
+ * Dismiss the change popup.
+ */
+function hideChangePopup() {
+  const popup = $('changePopup');
+  if (popup) popup.classList.add('hidden');
+}
+
+/**
+ * Update the change navigation counter text.
+ */
+function updateLearnNavCounter() {
+  const counter = $('learnNavCounter');
+  const nav     = $('learnNav');
+  if (!counter || !_currentChanges) return;
+  const total = _currentChanges.length;
+  if (total === 0) { if (nav) nav.style.display = 'none'; return; }
+  counter.textContent = `Perubahan ${_learnNavIdx + 1} dari ${total}`;
+  if (nav) nav.style.display = '';
+}
+
+/**
+ * Navigate to a specific change by index — scroll to its mark, open popup.
+ */
+function navigateToChange(idx) {
+  if (!_currentChanges || _currentChanges.length === 0) return;
+  _learnNavIdx = ((idx % _currentChanges.length) + _currentChanges.length) % _currentChanges.length;
+  const change = _currentChanges[_learnNavIdx];
+  const learnPanel = $('learnHighlightPanel');
+  if (!learnPanel) return;
+
+  // Find the first mark with this change id
+  const mark = learnPanel.querySelector(`[data-chg-id="${change.id}"]`);
+  if (mark) {
+    // Remove active class from all marks first
+    learnPanel.querySelectorAll('.chg-mark').forEach(m => m.classList.remove('chg-mark-active'));
+    mark.classList.add('chg-mark-active');
+    mark.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    showChangePopup(change, mark);
+  }
+  updateLearnNavCounter();
+}
+
+/**
+ * Build the change category summary bar (count per category).
+ */
+function buildLearnSummaryBar(changes) {
+  const counts = {};
+  changes.forEach(c => {
+    const catId = c.explanation?.category?.id || 'word_choice';
+    const catLabel = c.explanation?.category?.label || 'PILIHAN KATA';
+    if (!counts[catId]) counts[catId] = { label: catLabel, count: 0 };
+    counts[catId].count++;
+  });
+
+  const total = changes.length;
+  const items = Object.values(counts).sort((a,b) => b.count - a.count);
+
+  const breakdown = items
+    .map(i => `<span class="lsb-item"><span class="lsb-count">${i.count}</span> ${i.label}</span>`)
+    .join('');
+
+  return `<div class="lsb-total">${total} perubahan dilakukan</div>
+    <div class="lsb-breakdown">${breakdown}</div>`;
+}
+
+/**
+ * Build the "Belajar dari Perubahan" learning panel content.
+ */
+function buildLearningPanelContent(changes, origText, impText) {
+  const catCounts = {};
+  changes.forEach(c => {
+    const cid = c.explanation?.category?.id || 'word_choice';
+    catCounts[cid] = (catCounts[cid] || 0) + 1;
+  });
+
+  // Findings
+  const findingLines = [];
+  if (catCounts.transition)  findingLines.push(`${catCounts.transition} transisi berulang ditemukan`);
+  if (catCounts.repetition)  findingLines.push(`${catCounts.repetition} kata yang berulang dikurangi`);
+  if (catCounts.variation)   findingLines.push(`${catCounts.variation} pembuka kalimat yang mirip divariasikan`);
+  if (catCounts.density)     findingLines.push(`${catCounts.density} kalimat terlalu panjang dipecah`);
+  if (catCounts.clarity)     findingLines.push(`${catCounts.clarity} formula retorika yang berulang diubah`);
+  if (catCounts.grammar)     findingLines.push(`${catCounts.grammar} artefak penulisan diperbaiki`);
+  if (catCounts.structure)   findingLines.push(`${catCounts.structure} kalimat sangat pendek digabung`);
+  if (catCounts.flow)        findingLines.push(`${catCounts.flow} susunan klausul diatur ulang`);
+  if (catCounts.word_choice) findingLines.push(`${catCounts.word_choice} pilihan kata disesuaikan`);
+
+  const findingsHtml = findingLines.length > 0
+    ? findingLines.map(l => `<div class="lf-item">• ${escapeHtml(l)}</div>`).join('')
+    : `<div class="lf-item">Tidak ada masalah signifikan yang terdeteksi.</div>`;
+
+  // Tips
+  const tips = [];
+  if (catCounts.transition)  tips.push('Jangan gunakan konektor yang sama secara berulang — hubungan logis antaride sering sudah jelas tanpa transisi eksplisit.');
+  if (catCounts.variation)   tips.push('Variasikan cara memulai kalimat — alihkan fokus ke keterangan, klausa kondisional, atau objek.');
+  if (catCounts.repetition)  tips.push('Setelah menulis, periksa kata yang muncul sangat sering. Variasikan yang tidak bersifat teknis.');
+  if (catCounts.density)     tips.push('Pecah kalimat yang terlalu panjang bila mengandung lebih dari satu gagasan utama.');
+  if (catCounts.clarity)     tips.push('Hindari formula pembuka yang berulang seperti "Hal ini menunjukkan bahwa…" di setiap paragraf.');
+  if (catCounts.grammar)     tips.push('Lakukan proofreading akhir untuk mencari kata terduplikat atau kalimat yang tidak terbentuk dengan benar.');
+  if (tips.length === 0)     tips.push('Pertahankan gaya penulisan yang sudah baik ini.');
+
+  // Coverage: fraction of changes that have actionable explanations
+  const withExplanation = changes.filter(c => c.explanation && c.explanation.pelajaran).length;
+  const coverage = changes.length > 0 ? Math.round((withExplanation / changes.length) * 100) : 0;
+
+  return { findingsHtml, tips, coverage, total: changes.length };
+}
+
+/**
+ * Render the Belajar dari Perubahan learning panel.
+ */
+function renderLearningPanel(changes, origText, impText) {
+  const panel      = $('learningPanel');
+  const coverageEl = $('learningCoverage');
+  const findingsEl = $('learningFindings');
+  const tipsEl     = $('learningTips');
+  if (!panel) return;
+
+  if (!changes || changes.length === 0) {
+    panel.classList.add('hidden');
+    return;
+  }
+
+  const { findingsHtml, tips, coverage, total } = buildLearningPanelContent(changes, origText, impText);
+
+  if (coverageEl) {
+    coverageEl.innerHTML = `
+      <span class="lc-label">Writing Improvement Coverage</span>
+      <span class="lc-value">${coverage}%</span>
+      <span class="lc-desc">${coverage}% masalah tulisan yang terdeteksi memiliki rekomendasi perbaikan.</span>`;
+  }
+
+  if (findingsEl) findingsEl.innerHTML = findingsHtml;
+
+  if (tipsEl) {
+    tipsEl.innerHTML = tips.map(t => `<li>${escapeHtml(t)}</li>`).join('');
+  }
+
+  panel.classList.remove('hidden');
+}
+
+/**
+ * Render the full "Pelajari Perubahan" view.
+ * Called when the user switches to the learn tab.
+ */
+function renderLearnView(origDoc, impDoc, changes) {
+  const learnPanel = $('learnHighlightPanel');
+  const summaryBar = $('learnSummaryBar');
+  const navEl      = $('learnNav');
+
+  if (!learnPanel || !impDoc) return;
+
+  // Render highlighted panel
+  renderHighlightedPanel(impDoc, changes || [], learnPanel);
+
+  // Summary bar
+  if (summaryBar) {
+    if (changes && changes.length > 0) {
+      summaryBar.innerHTML = buildLearnSummaryBar(changes);
+      summaryBar.style.display = '';
+    } else {
+      summaryBar.innerHTML = '<div class="lsb-total">Tidak ada perubahan terdeteksi.</div>';
+      summaryBar.style.display = '';
+    }
+  }
+
+  updateLearnNavCounter();
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   // Writing Improver controls
   initBtnGroup('writingGoalGroup', 'goal');
@@ -4397,6 +5762,31 @@ document.addEventListener('DOMContentLoaded', () => {
   $('improveBtn')?.addEventListener('click', runImprover);
   $('improveAgainBtn')?.addEventListener('click', runImproverAgain);
   $('improveResetBtn')?.addEventListener('click', resetImprover);
+
+  // ── Educational diff: change popup close ─────────────────────────────
+  $('changePopupClose')?.addEventListener('click', hideChangePopup);
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') hideChangePopup();
+  });
+  // Close popup when clicking outside it
+  document.addEventListener('click', e => {
+    const popup = $('changePopup');
+    if (popup && !popup.classList.contains('hidden') && !popup.contains(e.target) && !e.target.closest('.chg-mark')) {
+      hideChangePopup();
+    }
+  });
+
+  // ── Educational diff: change navigation ────────────────────────────
+  $('learnNavPrev')?.addEventListener('click', () => {
+    if (_currentChanges && _currentChanges.length > 0) {
+      navigateToChange(_learnNavIdx - 1);
+    }
+  });
+  $('learnNavNext')?.addEventListener('click', () => {
+    if (_currentChanges && _currentChanges.length > 0) {
+      navigateToChange(_learnNavIdx + 1);
+    }
+  });
 
   // Format toggle (Document View / Plain Text View)
   document.querySelectorAll('.format-toggle-btn').forEach(btn => {

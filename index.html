@@ -309,6 +309,7 @@
                   <button class="view-tab active" data-view="original" role="tab" aria-selected="true">Asli</button>
                   <button class="view-tab" data-view="improved" role="tab" aria-selected="false">Hasil Perbaikan</button>
                   <button class="view-tab" data-view="compare" role="tab" aria-selected="false">Perbandingan</button>
+                  <button class="view-tab view-tab-learn" data-view="learn" role="tab" aria-selected="false">🟨 Pelajari Perubahan</button>
                 </div>
                 <div class="format-toggle" role="group" aria-label="Mode tampilan dokumen">
                   <button class="format-toggle-btn active" data-format="document" aria-pressed="true">⊞ Dokumen</button>
@@ -345,6 +346,37 @@
                 </div>
               </div>
 
+              <!-- Learn / Pelajari Perubahan view -->
+              <div class="panel-view hidden" id="view-learn">
+                <!-- Legend + change navigation -->
+                <div class="learn-toolbar">
+                  <div class="learn-legend">
+                    <span class="learn-legend-swatch"></span>
+                    <span class="learn-legend-text">Bagian yang diperbaiki</span>
+                    <span class="learn-legend-tip" title="Bagian berwarna kuning menunjukkan kata, frasa, atau struktur yang diubah oleh Writing Improver. Klik untuk melihat penjelasan.">?</span>
+                  </div>
+                  <div class="learn-nav" id="learnNav" style="display:none;">
+                    <button class="learn-nav-btn" id="learnNavPrev" aria-label="Perubahan sebelumnya">← Sebelumnya</button>
+                    <span class="learn-nav-counter" id="learnNavCounter">Perubahan 1 dari 0</span>
+                    <button class="learn-nav-btn" id="learnNavNext" aria-label="Perubahan berikutnya">Berikutnya →</button>
+                  </div>
+                </div>
+                <!-- Change count summary bar -->
+                <div class="learn-summary-bar" id="learnSummaryBar" style="display:none;"></div>
+                <!-- Author voice notice -->
+                <div class="learn-voice-notice">
+                  ⚠ Perubahan otomatis tidak selalu lebih baik. Pertahankan bagian yang masih mencerminkan gaya dan suara Anda.
+                </div>
+                <!-- Highlighted improved panel -->
+                <div class="text-panel improved-panel learn-panel" id="learnHighlightPanel"></div>
+              </div>
+
+            </div>
+
+            <!-- Change explanation popup (global, positioned by JS) -->
+            <div class="change-popup hidden" id="changePopup" role="dialog" aria-modal="false" aria-label="Penjelasan perubahan">
+              <button class="change-popup-close" id="changePopupClose" aria-label="Tutup">✕</button>
+              <div class="change-popup-body" id="changePopupBody"></div>
             </div>
 
             <!-- Evaluasi Hasil Perbaikan -->
@@ -352,6 +384,17 @@
               <h4 class="evaluasi-title">Evaluasi Hasil Perbaikan</h4>
               <div class="evaluasi-scores" id="evaluasiScores"></div>
               <div class="evaluasi-status" id="evaluasiStatus"></div>
+            </div>
+
+            <!-- Learning Panel — Belajar dari Perubahan -->
+            <div class="learning-panel hidden" id="learningPanel">
+              <div class="learning-panel-header">
+                <h4 class="learning-panel-title">Belajar dari Perubahan</h4>
+                <div class="learning-coverage" id="learningCoverage"></div>
+              </div>
+              <div class="learning-findings" id="learningFindings"></div>
+              <div class="learning-tips-title">Apa yang bisa Anda perbaiki sendiri?</div>
+              <ul class="learning-tips" id="learningTips"></ul>
             </div>
 
             <!-- Fail-safe: shown when no candidate passed strict validation -->

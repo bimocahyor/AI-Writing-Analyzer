@@ -1665,3 +1665,333 @@ input, textarea, select { font-family: inherit; }
   .improver-panels-toolbar { flex-direction: column; align-items: flex-start; }
   .format-toggle { align-self: flex-end; }
 }
+
+/* ============================================================
+   EDUCATIONAL DIFF — yellow highlights, popup, learning panel
+   ============================================================ */
+
+/* ── "Pelajari Perubahan" view-tab ───────────────────────── */
+.view-tab-learn {
+  position: relative;
+}
+
+/* ── Yellow change highlight marks ──────────────────────── */
+.chg-mark {
+  background: #FEF3A6;
+  color: #1a1a00;
+  border-radius: 3px;
+  padding: 0 2px;
+  cursor: pointer;
+  outline: none;
+  transition: background 0.15s;
+  /* Ensure inline rendering within paragraph text */
+  display: inline;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.chg-mark:hover,
+.chg-mark:focus {
+  background: #FADA4A;
+  box-shadow: 0 0 0 2px #FADA4A66;
+}
+.chg-mark.chg-mark-active {
+  background: #F5C400;
+  box-shadow: 0 0 0 2px #F5C40088;
+}
+/* Category colour tints (subtle) */
+.chg-mark.chg-transition  { background: #FEF3A6; }
+.chg-mark.chg-repetition  { background: #FFF0B0; }
+.chg-mark.chg-variation   { background: #FFF5C0; }
+.chg-mark.chg-density     { background: #FEF3A6; }
+.chg-mark.chg-structure   { background: #FEEFC0; }
+.chg-mark.chg-clarity     { background: #FEF3A6; }
+.chg-mark.chg-grammar     { background: #FFE8B0; }
+.chg-mark.chg-flow        { background: #FFF3C0; }
+.chg-mark.chg-word_choice { background: #FEF3A6; }
+
+/* ── Change explanation popup ────────────────────────────── */
+.change-popup {
+  position: absolute;
+  z-index: 9999;
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  background: #1a2540;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: 0;
+  overflow: hidden;
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+.change-popup-close {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.55rem;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 0.88rem;
+  cursor: pointer;
+  padding: 2px 5px;
+  border-radius: 4px;
+  transition: color var(--transition);
+}
+.change-popup-close:hover { color: var(--text-primary); background: var(--border-color); }
+.change-popup-body {
+  padding: 1rem 1rem 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+.cpp-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.15rem;
+}
+.cpp-cat-badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 20px;
+  background: rgba(253,243,166,0.15);
+  border: 1px solid rgba(253,243,166,0.3);
+  color: #FEF3A6;
+  text-transform: uppercase;
+}
+.cpp-mag {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+.cpp-section {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+.cpp-lesson {
+  background: rgba(253,243,166,0.06);
+  border-left: 2px solid #FADA4A55;
+  border-radius: 0 4px 4px 0;
+  padding: 0.4rem 0.6rem;
+  color: var(--text-primary);
+}
+.cpp-label {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.cpp-row {
+  font-size: 0.79rem;
+}
+.cpp-removed-text {
+  color: #fca5a5;
+  font-style: italic;
+  text-decoration: line-through;
+}
+.cpp-added-text {
+  color: #86efac;
+  font-style: italic;
+}
+
+/* ── Learn view toolbar (legend + navigation) ────────────── */
+.learn-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 0.65rem;
+}
+.learn-legend {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+.learn-legend-swatch {
+  display: inline-block;
+  width: 1rem;
+  height: 1rem;
+  background: #FEF3A6;
+  border-radius: 3px;
+  border: 1px solid rgba(0,0,0,0.15);
+  flex-shrink: 0;
+}
+.learn-legend-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  background: var(--border-color);
+  border-radius: 50%;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  cursor: help;
+  flex-shrink: 0;
+}
+.learn-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+.learn-nav-btn {
+  font-size: 0.77rem;
+  font-weight: 600;
+  padding: 0.28rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-card-alt);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition);
+  font-family: inherit;
+}
+.learn-nav-btn:hover { background: var(--border-color); color: var(--text-primary); }
+.learn-nav-btn:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
+.learn-nav-counter {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  min-width: 120px;
+  text-align: center;
+}
+
+/* ── Learn summary bar ───────────────────────────────────── */
+.learn-summary-bar {
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 0.55rem 1rem;
+  margin-bottom: 0.65rem;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.lsb-total {
+  font-size: 0.83rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-right: 0.5rem;
+  flex-shrink: 0;
+}
+.lsb-breakdown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.lsb-item {
+  font-size: 0.73rem;
+  background: rgba(253,243,166,0.08);
+  border: 1px solid rgba(253,243,166,0.2);
+  color: var(--text-secondary);
+  border-radius: 20px;
+  padding: 2px 9px;
+  white-space: nowrap;
+}
+.lsb-count {
+  font-weight: 700;
+  color: #FEF3A6;
+  margin-right: 3px;
+}
+
+/* ── Author voice notice ─────────────────────────────────── */
+.learn-voice-notice {
+  font-size: 0.77rem;
+  color: var(--text-muted);
+  background: rgba(234,179,8,0.06);
+  border-left: 2px solid rgba(234,179,8,0.3);
+  padding: 0.4rem 0.8rem;
+  border-radius: 0 4px 4px 0;
+  margin-bottom: 0.65rem;
+}
+
+/* ── Learning panel (Belajar dari Perubahan) ─────────────── */
+.learning-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 1.2rem 1.4rem;
+  margin-top: 1rem;
+}
+.learning-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+.learning-panel-title {
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: var(--text-primary);
+}
+.learning-coverage {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.lc-label {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.lc-value {
+  font-size: 1.1rem;
+  font-weight: 800;
+  color: #FEF3A6;
+}
+.lc-desc {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+.learning-findings {
+  margin-bottom: 1rem;
+}
+.lf-item {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  padding: 0.2rem 0;
+}
+.learning-tips-title {
+  font-size: 0.83rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 0.5rem;
+}
+.learning-tips {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.learning-tips li {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  padding-left: 1.2rem;
+  position: relative;
+}
+.learning-tips li::before {
+  content: '→';
+  position: absolute;
+  left: 0;
+  color: #FADA4A;
+}
+
+/* ── Learn panel scrollable ──────────────────────────────── */
+.learn-panel {
+  max-height: 520px;
+  overflow-y: auto;
+}
+
+/* ── Responsive: stack on mobile ────────────────────────── */
+@media (max-width: 600px) {
+  .learn-toolbar { flex-direction: column; align-items: flex-start; }
+  .change-popup  { width: calc(100vw - 16px); left: 8px !important; }
+  .learning-panel-header { flex-direction: column; }
+}
